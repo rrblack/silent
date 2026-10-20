@@ -270,6 +270,7 @@ component Room inherits Rectangle {
     callback copy-code;
     callback send-chat;
     callback show-verify;
+    callback show-stats;
 
     background: Palette.bg;
 
@@ -317,6 +318,12 @@ component Room inherits Rectangle {
                 color: Palette.subtext;
                 font-size: 12px;
                 vertical-alignment: center;
+            }
+            PillButton {
+                y: 8px;
+                label: "Stats";
+                enabled: root.verifications.length > 0;
+                clicked => { root.show-stats(); }
             }
             PillButton {
                 y: 8px;
@@ -461,6 +468,8 @@ export component AppWindow inherits Window {
     in property <[SourceItem]> sources;
     in-out property <bool> picker-open: false;
     in-out property <bool> verify-open: false;
+    in-out property <bool> stats-open: false;
+    in property <[string]> stats-lines;
 
     callback create-room;
     callback join-room;
@@ -471,6 +480,7 @@ export component AppWindow inherits Window {
     callback leave;
     callback copy-code;
     callback send-chat;
+    callback stats-opened;
 
     if root.screen == "home": Home {
         name <=> root.name;
@@ -503,6 +513,10 @@ export component AppWindow inherits Window {
         copy-code => { root.copy-code(); }
         send-chat => { root.send-chat(); }
         show-verify => { root.verify-open = true; }
+        show-stats => {
+            root.stats-open = true;
+            root.stats-opened();
+        }
     }
 
     if root.picker-open: Sheet {
@@ -549,5 +563,18 @@ export component AppWindow inherits Window {
             Text { text: v.words; color: Palette.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
         }
         PillButton { label: "Done"; clicked => { root.verify-open = false; } }
+    }
+
+    if root.stats-open: Sheet {
+        title: "Call quality";
+        subtitle: "Live numbers for each friend, refreshed every second.";
+        close => { root.stats-open = false; }
+        for line in root.stats-lines: Text {
+            text: line;
+            color: Palette.text;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        PillButton { label: "Done"; clicked => { root.stats-open = false; } }
     }
 }

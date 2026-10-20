@@ -456,6 +456,63 @@ fn leave_room(error: Option<&str>) {
     }
 }
 
+fn describe(v: &silent_engine::stats::VideoStats) -> String {
+    let what = match v.kind {
+        Some(VideoKind::Camera) => "camera",
+        Some(VideoKind::Screen) => "screen",
+        None => "video",
+    };
+    let mut line = format!(
+        "{what} {}x{} @ {:.0} fps, {}",
+        v.width, v.height, v.fps, v.implementation
+    );
+    if v.target_bitrate_bps > 0.0 {
+        line.push_str(&format!(", {:.1} Mbps", v.target_bitrate_bps / 1e6));
+    }
+    if !v.limited_by.is_empty() && v.limited_by != "none" {
+        line.push_str(&format!(", limited by {}", v.limited_by));
+    }
+    line
+}
+
+fn refresh_stats(window: slint::Weak<AppWindow>) {
+    let mut request = None;
+    with_room(|r| request = Some(r.stats()));
+    let Some(request) = request else { return };
+    backend().rt.spawn(async move {
+        let stats = request.await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = window.upgrade() else { return };
+            let mut lines: Vec<SharedString> = Vec::new();
+            UI.with(|cell| {
+                let cell = cell.borrow();
+                let names = cell.as_ref().map(|s| &s.peers);
+                for p in &stats {
+                    let name = names
+                        .and_then(|n| n.get(&p.peer))
+                        .map(|v| v.name.as_str())
+                        .unwrap_or("Friend");
+                    let rtt = p
+                        .rtt_ms
+                        .map(|r| format!(" (round trip {r:.0} ms)"))
+                        .unwrap_or_default();
+                    lines.push(format!("{name}{rtt}").into());
+                    for v in &p.sending {
+                        lines.push(format!("    you send: {}", describe(v)).into());
+                    }
+                    for v in &p.receiving {
+                        lines.push(format!("    you get: {}", describe(v)).into());
+                    }
+                }
+            });
+            if lines.is_empty() {
+                lines.push("No video flowing yet.".into());
+            }
+            w.set_stats_lines(ModelRc::new(VecModel::from(lines)));
+        });
+    });
+}
+
 fn test_patterns() -> bool {
     std::env::var_os("SILENT_TEST_PATTERN").is_some()
 }
@@ -651,7 +708,25 @@ fn main() -> anyhow::Result<()> {
         w.set_draft("".into());
     });
 
+    let weak = window.as_weak();
+    let stats_timer = Rc::new(slint::Timer::default());
+    let timer = stats_timer.clone();
+    window.on_stats_opened(move || {
+        let weak = weak.clone();
+        refresh_stats(weak.clone());
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(1),
+            move || {
+                if weak.upgrade().is_some_and(|w| w.get_stats_open()) {
+                    refresh_stats(weak.clone());
+                }
+            },
+        );
+    });
+
     window.run()?;
+    drop(stats_timer);
 
     if let Some(room) = backend().room.lock().unwrap().take() {
         let _ = backend()

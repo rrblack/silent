@@ -184,6 +184,24 @@ async fn two_friends_connect_chat_and_share_screen() {
     );
     assert!(frames > 10, "only {frames} frames in 4s");
 
+    let stats = alice.room.stats().await;
+    let screen = stats[0]
+        .sending
+        .iter()
+        .find(|v| v.kind == Some(VideoKind::Screen))
+        .expect("screen in outbound stats");
+    println!(
+        "sender stats: {}x{} @ {:.1} fps via {} (limited by {}, rtt {:?} ms)",
+        screen.width,
+        screen.height,
+        screen.fps,
+        screen.implementation,
+        screen.limited_by,
+        stats[0].rtt_ms
+    );
+    assert_eq!((screen.width, screen.height), (1920, 1080));
+    assert!(!screen.implementation.is_empty());
+
     alice.room.share_screen(None);
     bob.until(|e| match e {
         RoomEvent::PeerMedia { state, .. } if !state.screen => Some(()),

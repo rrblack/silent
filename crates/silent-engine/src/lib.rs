@@ -6,6 +6,7 @@ pub mod capture;
 pub mod media;
 mod room;
 mod signaling;
+pub mod stats;
 
 use libwebrtc::peer_connection_factory::PeerConnectionFactory;
 use silent_core::proto::{Intent, RelayErrorCode};

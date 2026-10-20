@@ -34,7 +34,10 @@ use crate::media::{
     ScreenProfile, ScreenTarget, VideoKind, STREAM_AUDIO,
 };
 use crate::signaling::{SignalLink, Welcome};
+use crate::stats::{self, PeerStats};
 use crate::{camera, capture};
+
+const START_BITRATE_BPS: u64 = 1_200_000;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -101,6 +104,7 @@ enum Command {
     Mic(bool),
     Camera(Option<CameraTarget>),
     Screen(Option<ScreenTarget>),
+    Stats(oneshot::Sender<Vec<PeerStats>>),
     Leave(oneshot::Sender<()>),
 }
 
@@ -229,6 +233,20 @@ impl Room {
         let _ = self.commands.send(Command::Screen(target));
     }
 
+    /// Video statistics for every connected friend. The request is sent
+    /// immediately; the returned future does not borrow the room.
+    pub fn stats(&self) -> impl std::future::Future<Output = Vec<PeerStats>> + Send + 'static {
+        let (tx, rx) = oneshot::channel();
+        let sent = self.commands.send(Command::Stats(tx)).is_ok();
+        async move {
+            if sent {
+                rx.await.unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
     pub async fn leave(self) {
         let (tx, rx) = oneshot::channel();
         if self.commands.send(Command::Leave(tx)).is_ok() {
@@ -321,6 +339,21 @@ impl Actor {
                         self.shutdown();
                         let _ = done.send(());
                         return;
+                    }
+                    Some(Command::Stats(reply)) => {
+                        let pcs: Vec<(PeerId, PeerConnection)> = self
+                            .peers
+                            .iter()
+                            .filter(|(_, p)| p.announced_connected)
+                            .filter_map(|(&id, p)| Some((id, p.pc.clone()?)))
+                            .collect();
+                        tokio::spawn(async move {
+                            let mut all = Vec::with_capacity(pcs.len());
+                            for (id, pc) in pcs {
+                                all.push(stats::collect(id, &pc).await);
+                            }
+                            let _ = reply.send(all);
+                        });
                     }
                     Some(cmd) => self.on_command(cmd),
                     None => {
@@ -568,6 +601,16 @@ impl Actor {
         let pc = self
             .factory
             .create_peer_connection(self.rtc_config.clone())?;
+        // Start the bandwidth estimate where 720p looks decent instead of
+        // WebRTC's conservative default, so video sharpens within seconds.
+        let bitrate = BitrateSettings {
+            min_bitrate_bps: None,
+            start_bitrate_bps: Some(START_BITRATE_BPS),
+            max_bitrate_bps: None,
+        };
+        if let Err(e) = pc.set_bitrate(bitrate) {
+            tracing::debug!(peer, "could not set start bitrate: {e}");
+        }
 
         let tx = self.internal.clone();
         pc.on_ice_candidate(Some(Box::new(move |c: IceCandidate| {
@@ -892,7 +935,7 @@ impl Actor {
                 self.sync_senders(None);
                 self.broadcast_media();
             }
-            Command::Leave(_) => unreachable!("handled in run loop"),
+            Command::Leave(_) | Command::Stats(_) => unreachable!("handled in run loop"),
         }
     }
 
