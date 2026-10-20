@@ -52,7 +52,12 @@ pub fn room_path(nameplate: u16, intent: Intent) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ServerMsg {
-    Welcome { you: PeerId, peers: Vec<PeerId> },
+    Welcome {
+        you: PeerId,
+        peers: Vec<PeerId>,
+        #[serde(default)]
+        ice: IceConfig,
+    },
     Joined { peer: PeerId },
     Left { peer: PeerId },
     Relay { from: PeerId, data: String },
@@ -135,7 +140,7 @@ pub struct MediaState {
     pub screen: bool,
 }
 
-/// Returned by `GET /v1/ice`. Lets the relay hand out short-lived TURN
+/// Sent in the relay's welcome. Lets the relay hand out short-lived TURN
 /// credentials without them ever being baked into the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IceConfig {
@@ -184,8 +189,8 @@ mod tests {
 
     #[test]
     fn server_msg_json_shape() {
-        let m = ServerMsg::Welcome { you: 2, peers: vec![1] };
-        assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"t":"welcome","you":2,"peers":[1]}"#);
+        let m: ServerMsg = serde_json::from_str(r#"{"t":"welcome","you":2,"peers":[1]}"#).unwrap();
+        assert_eq!(m, ServerMsg::Welcome { you: 2, peers: vec![1], ice: IceConfig::default() });
         let e = ServerMsg::Error { code: RelayErrorCode::RoomFull };
         assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"t":"error","code":"room_full"}"#);
         let c: ClientMsg = serde_json::from_str(r#"{"t":"relay","to":3,"data":"x"}"#).unwrap();

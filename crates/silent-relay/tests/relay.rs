@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use silent_core::proto::{room_path, ClientMsg, IceConfig, Intent, RelayErrorCode, ServerMsg};
+use silent_core::proto::{room_path, ClientMsg, Intent, RelayErrorCode, ServerMsg};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -56,11 +56,12 @@ async fn room_lifecycle() {
     let n = unique_nameplate();
 
     let mut a = connect(&base, n, Intent::Create).await;
-    let ServerMsg::Welcome { you: a_id, peers } = recv(&mut a).await else { panic!() };
+    let ServerMsg::Welcome { you: a_id, peers, ice } = recv(&mut a).await else { panic!() };
     assert!(peers.is_empty());
+    assert!(!ice.ice_servers.is_empty());
 
     let mut b = connect(&base, n, Intent::Join).await;
-    let ServerMsg::Welcome { you: b_id, peers } = recv(&mut b).await else { panic!() };
+    let ServerMsg::Welcome { you: b_id, peers, .. } = recv(&mut b).await else { panic!() };
     assert_eq!(peers, vec![a_id]);
     assert_ne!(a_id, b_id);
     assert_eq!(recv(&mut a).await, ServerMsg::Joined { peer: b_id });
@@ -131,22 +132,4 @@ async fn oversized_relay_data_is_rejected() {
     let data = "x".repeat(silent_core::proto::MAX_RELAY_DATA + 1);
     send(&mut b, &ClientMsg::Relay { to: you, data }).await;
     assert_eq!(recv(&mut b).await, ServerMsg::Error { code: RelayErrorCode::TooLarge });
-}
-
-#[tokio::test]
-async fn ice_endpoint_serves_config() {
-    let base = relay_base().await;
-    let host = base.trim_start_matches("http://");
-    let mut stream = TcpStream::connect(host).await.unwrap();
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    stream
-        .write_all(format!("GET /v1/ice HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes())
-        .await
-        .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).await.unwrap();
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    let body = response.split("\r\n\r\n").nth(1).unwrap();
-    let config: IceConfig = serde_json::from_str(body.trim()).unwrap();
-    assert!(!config.ice_servers.is_empty());
 }

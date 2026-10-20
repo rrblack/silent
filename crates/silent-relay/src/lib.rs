@@ -13,7 +13,7 @@ use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use silent_core::code::NAMEPLATE_MAX;
 use silent_core::proto::{
@@ -57,17 +57,12 @@ pub fn router(config: RelayConfig) -> Router {
     let state = AppState { rooms: Arc::default(), config: Arc::new(config) };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/v1/ice", get(ice))
         .route("/v1/rooms/{nameplate}", get(room))
         .with_state(state)
 }
 
 pub async fn serve(listener: TcpListener, config: RelayConfig) -> std::io::Result<()> {
     axum::serve(listener, router(config)).await
-}
-
-async fn ice(State(state): State<AppState>) -> Json<IceConfig> {
-    Json(state.config.ice.clone())
 }
 
 async fn room(
@@ -148,7 +143,7 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
     tracing::debug!(room = nameplate, peer = me, "joined");
 
     let (mut sink, mut stream) = socket.split();
-    let _ = tx.try_send(ServerMsg::Welcome { you: me, peers });
+    let _ = tx.try_send(ServerMsg::Welcome { you: me, peers, ice: state.config.ice.clone() });
     let mut writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if sink.send(text(&msg)).await.is_err() {
