@@ -83,3 +83,4 @@ Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` an
 7. The prebuilt Android `libwebrtc.a` defines `JNI_OnLoad`. Don't define another; init goes through `SilentNative.init(context)`.
 8. Release builds strip symbols, which removes UniFFI's metadata. Mobile libraries use `--profile mobile` (`strip = "debuginfo"`).
 9. Windows: the static CRT is required (`.cargo/config.toml`). macOS: needs a recent Xcode (CI picks the latest stable).
+10. **Never drop a `PeerConnection`/`DataChannel` right after `close()`.** libwebrtc can still deliver queued callbacks (e.g. ICE state), and webrtc-sys frees the C++ observer with the last Rust handle, so the callback hits freed memory (intermittent SIGSEGV). `room::retire` clears handlers, closes, and parks handles for 10 s; `Peer`'s `Drop` goes through it. All engines share one process-wide factory for the same reason.

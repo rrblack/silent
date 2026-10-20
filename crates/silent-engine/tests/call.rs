@@ -16,6 +16,10 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 const STEP: Duration = Duration::from_secs(20);
 
+/// One call at a time, as in the real app. Several 1080p60 software-encoded
+/// meshes in parallel on a small CI machine only measure CPU starvation.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// In-process relay, or `SILENT_TEST_RELAY` (e.g. `wrangler dev`) to run the
 /// same calls through the Cloudflare Worker.
 async fn relay() -> String {
@@ -116,6 +120,7 @@ impl Member {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_friends_connect_chat_and_share_screen() {
+    let _serial = SERIAL.lock().await;
     let relay = relay().await;
     let engine = Engine::new();
 
@@ -222,6 +227,7 @@ async fn two_friends_connect_chat_and_share_screen() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wrong_code_is_detected_and_isolated() {
+    let _serial = SERIAL.lock().await;
     let relay = relay().await;
     let engine = Engine::new();
 
@@ -264,6 +270,7 @@ async fn wrong_code_is_detected_and_isolated() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn four_friends_full_mesh_and_fifth_is_turned_away() {
+    let _serial = SERIAL.lock().await;
     let relay = relay().await;
     let engines: Vec<Engine> = (0..5).map(|_| Engine::new()).collect();
 
@@ -322,6 +329,7 @@ async fn four_friends_full_mesh_and_fifth_is_turned_away() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pushed_frames_arrive_upright() {
+    let _serial = SERIAL.lock().await;
     let relay = relay().await;
     let engine = Engine::new();
 

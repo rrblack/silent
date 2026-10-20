@@ -36,7 +36,10 @@ pub enum RoomError {
     Signal(#[from] SignalError),
 }
 
-/// Owns the WebRTC factory (threads, audio device). Create one per process.
+/// Entry point for rooms. Cheap to create: every engine shares one
+/// process-wide WebRTC factory (threads, audio device), which is never torn
+/// down because libwebrtc does not cope with factories being destroyed while
+/// others are in use.
 pub struct Engine {
     factory: PeerConnectionFactory,
 }
@@ -49,8 +52,9 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new() -> Self {
+        static FACTORY: std::sync::OnceLock<PeerConnectionFactory> = std::sync::OnceLock::new();
         Self {
-            factory: PeerConnectionFactory::default(),
+            factory: FACTORY.get_or_init(PeerConnectionFactory::default).clone(),
         }
     }
 

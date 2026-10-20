@@ -14,7 +14,8 @@
 //!    media and chat are end to end between the two devices.
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use libwebrtc::peer_connection::PeerConnection;
 use libwebrtc::peer_connection_factory::PeerConnectionFactory;
@@ -317,6 +318,50 @@ struct Peer {
     video_senders: Vec<(VideoKind, RtpSender)>,
 }
 
+impl Drop for Actor {
+    fn drop(&mut self) {
+        self.stop_everything();
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        retire(self.pc.take(), self.dc.take());
+    }
+}
+
+/// How long a closed connection is kept before its handles are released.
+const RETIRE_AFTER: Duration = Duration::from_secs(10);
+
+type Retired = (Instant, Option<PeerConnection>, Option<DataChannel>);
+
+/// Closes a connection and parks its handles for a while instead of dropping
+/// them. libwebrtc can still deliver queued callbacks (ICE state changes)
+/// after `close()`, and webrtc-sys frees the C++ observer as soon as the last
+/// Rust handle goes away, which turns those callbacks into use-after-free
+/// crashes. Seen as intermittent SIGSEGVs whenever a friend leaves.
+fn retire(pc: Option<PeerConnection>, dc: Option<DataChannel>) {
+    static GRAVEYARD: Mutex<Vec<Retired>> = Mutex::new(Vec::new());
+    if pc.is_none() && dc.is_none() {
+        return;
+    }
+    if let Some(dc) = &dc {
+        dc.on_message(None);
+        dc.on_state_change(None);
+        dc.close();
+    }
+    if let Some(pc) = &pc {
+        pc.on_ice_candidate(None);
+        pc.on_connection_state_change(None);
+        pc.on_track(None);
+        pc.close();
+    }
+    let now = Instant::now();
+    let mut graveyard = GRAVEYARD.lock().unwrap_or_else(|e| e.into_inner());
+    graveyard.retain(|(at, _, _)| now.duration_since(*at) < RETIRE_AFTER);
+    graveyard.push((now, pc, dc));
+}
+
 struct Actor {
     code: InviteCode,
     me: PeerId,
@@ -409,13 +454,9 @@ impl Actor {
             return;
         }
         let (handshake, outbound) = PairHandshake::start(&self.code, self.me, peer);
-        self.peers.insert(
-            peer,
-            Peer {
-                handshake: Some(handshake),
-                ..Default::default()
-            },
-        );
+        let mut new_peer = Peer::default();
+        new_peer.handshake = Some(handshake);
+        self.peers.insert(peer, new_peer);
         self.relay_frame(peer, PeerFrame::Pake(outbound));
         self.emit(RoomEvent::PeerJoining { peer });
     }
@@ -499,10 +540,7 @@ impl Actor {
     fn reject(&mut self, peer: PeerId) {
         if let Some(p) = self.peers.get_mut(&peer) {
             p.rejected = true;
-            if let Some(pc) = p.pc.take() {
-                pc.close();
-            }
-            p.dc = None;
+            retire(p.pc.take(), p.dc.take());
         }
         self.emit(RoomEvent::PeerWrongCode { peer });
     }
@@ -762,15 +800,10 @@ impl Actor {
     }
 
     fn drop_peer(&mut self, peer: PeerId) {
+        // Dropping the peer retires its connection (see `retire`).
         let Some(p) = self.peers.remove(&peer) else {
             return;
         };
-        if let Some(dc) = &p.dc {
-            dc.close();
-        }
-        if let Some(pc) = &p.pc {
-            pc.close();
-        }
         if p.verified {
             self.emit(RoomEvent::PeerLeft { peer });
         }
@@ -979,14 +1012,14 @@ impl Actor {
                 self.send_signal(*peer, &Signal::Bye);
             }
         }
-        for peer in peers {
-            if let Some(p) = self.peers.remove(&peer) {
-                if let Some(pc) = &p.pc {
-                    pc.close();
-                }
-            }
-        }
+        self.stop_everything();
+    }
+
+    /// Stops capture before closing connections, so closing doesn't race a
+    /// stream of new frames through encoders that are being torn down.
+    fn stop_everything(&mut self) {
         self.media.camera.producer = None;
         self.media.screen.producer = None;
+        self.peers.clear();
     }
 }
