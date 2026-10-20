@@ -513,6 +513,25 @@ fn refresh_stats(window: slint::Weak<AppWindow>) {
     });
 }
 
+/// When the relay is on this machine and nothing is serving it yet, the
+/// first app instance hosts it. Two windows on one computer can then call
+/// each other with nothing else running. Only binds to loopback.
+fn start_local_relay(relay_url: &str) {
+    let Some(port) = relay_url
+        .strip_prefix("http://127.0.0.1:")
+        .or_else(|| relay_url.strip_prefix("http://localhost:"))
+        .and_then(|p| p.trim_end_matches('/').parse::<u16>().ok())
+    else {
+        return;
+    };
+    backend().rt.spawn(async move {
+        if let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            tracing::info!("hosting local relay on 127.0.0.1:{port}");
+            let _ = silent_relay::serve(listener, Default::default()).await;
+        }
+    });
+}
+
 fn test_patterns() -> bool {
     std::env::var_os("SILENT_TEST_PATTERN").is_some()
 }
@@ -546,6 +565,7 @@ fn main() -> anyhow::Result<()> {
 
     let window = AppWindow::new()?;
     let relay = std::env::var("SILENT_RELAY_URL").unwrap_or_else(|_| DEFAULT_RELAY.into());
+    start_local_relay(&relay);
     window.set_relay_url(relay.into());
 
     let weak = window.as_weak();

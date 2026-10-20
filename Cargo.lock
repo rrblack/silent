@@ -5166,6 +5166,7 @@ dependencies = [
  "futures-util",
  "silent-core",
  "silent-engine",
+ "silent-relay",
  "slint",
  "slint-build",
  "tokio",

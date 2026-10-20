@@ -28,11 +28,10 @@ It covers what is built and verified, how to run it, and exactly what needs real
 export CC=clang-21 CXX=clang++-21
 
 cargo test --workspace                    # ~10 s after the first build
-cargo run -p silent-relay                 # relay on 127.0.0.1:8787
-cargo run --release -p silent-app         # run twice to call yourself
+cargo run --release -p silent-app         # run twice to call yourself (first window hosts the relay)
 ```
 
-The app's default relay is `http://127.0.0.1:8787`. To test across machines, run the relay on one of them:
+The app's default relay is `http://127.0.0.1:8787`. If nothing is listening there, the first app window hosts a relay itself (loopback only). Two windows on one computer can therefore call each other with nothing else running. To test across machines, run the relay on one of them:
 
 ```sh
 SILENT_RELAY_ADDR=0.0.0.0:8787 cargo run -p silent-relay

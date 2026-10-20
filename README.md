@@ -35,9 +35,11 @@ cargo test --workspace                     # unit, relay and in-process call tes
 ## Running locally
 
 ```sh
-cargo run -p silent-relay                  # relay on 127.0.0.1:8787
 cargo run --release -p silent-app          # start two of these to call yourself
 ```
+
+The first window hosts a local relay on 127.0.0.1:8787 if nothing else is serving it. For calls between machines, run `SILENT_RELAY_ADDR=0.0.0.0:8787 cargo run -p silent-relay` on one of them, or deploy the Worker.
+
 
 | Environment variable | Effect |
 |---|---|
