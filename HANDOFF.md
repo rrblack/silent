@@ -1,182 +1,154 @@
-# Silent: handoff for hardware testing
+# Silent: handoff
 
-This file is for the next Claude session (on a desktop machine) and for whoever is testing.
-It covers what is built and verified, how to run it, and exactly what needs real hardware.
+The state of the project, how to pick it up, and what to do next. Written at the end of the first build session (October 2026) for Kyle and the next Claude session. Read [CLAUDE.md](CLAUDE.md) for the architecture and rules.
 
-## Where things stand
+## 1. Where things stand
 
-**Built and verified in a Linux cloud container (no GPU, camera, microphone or speakers):**
+| Area | Built | Verified | Not verified yet |
+|---|---|---|---|
+| Crypto and protocol (`silent-core`) | ✅ | 23 unit tests | Independent security review |
+| Rust relay (`silent-relay`) | ✅ | 5 protocol tests | |
+| Cloudflare Worker relay (`signal/`) | ✅ | Same 5 tests against `wrangler dev`, plus all call tests through it | **Not deployed** |
+| Call engine (`silent-engine`) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share (received at ~55-59 fps), wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames arriving upright | Real networks, NAT, TURN |
+| Desktop app (Slint, red and black) | ✅ | Two instances driven on a virtual display: create, copy code, join, camera test pattern, real X11 screen capture, chat, Verify (matching words), Stats, wrong-code error, leave | Real webcam, mic, speakers, echo cancellation, GPU encoding |
+| Windows, macOS and Linux builds | ✅ | CI green on all three; artifacts download | Running on real Windows and Mac machines |
+| Android app | ✅ | APK builds in CI; the mobile API passes an end-to-end host test | **Never run on a phone** |
+| iOS app | ❌ | | Not started (no Mac, no iPhone yet) |
 
-| Area | Status | How it was verified |
-|---|---|---|
-| Invite codes, SPAKE2, sealed envelopes, safety words | Done | 23 unit tests (`silent-core`) |
-| Rust relay | Done | 5 protocol tests (`silent-relay/tests/relay.rs`) |
-| Cloudflare Worker relay | Done, not deployed | The same 5 tests pass against `wrangler dev`; the call tests also pass through it |
-| 1:1 call: connect, verify code, chat, screen share | Done | `two_friends_connect_chat_and_share_screen`: 1080p60 test pattern received at **~55-58 fps**; sender stats `1920x1080 @ 60.0 fps via libvpx` |
-| Wrong code is detected and kept out | Done | `wrong_code_is_detected_and_isolated` and the UI flow |
-| 4-person full mesh, 5th turned away | Done | `four_friends_full_mesh_and_fifth_is_turned_away` |
-| Desktop app UI | Done | Two app instances driven with xdotool on Xvfb: create, copy code, join, camera (test pattern), real X11 screen capture, chat, Verify (matching words on both sides), Stats, wrong-code error, leave |
-| Webcam capture (nokhwa) | Written, **never run with a camera** | Compiles on Linux only |
-| Microphone, speakers, echo cancellation | Written, **never run with audio devices** | Falls back to silence when no device is present |
-| Hardware video encoding | **Unknown** | Only software (libvpx) available in the container |
-| Windows and macOS builds | **Never compiled** | CI workflow written but never run (no GitHub repo yet) |
+**Repo:** https://github.com/rrblack/silent (private), branch `main`.
+**Builds:** https://github.com/rrblack/silent/actions. Open the newest run; the downloads are under Artifacts.
 
-## Running it
+## 2. Getting the code onto your PC
 
-```sh
-# Linux only: libwebrtc's prebuilt archive needs clang >= 21
-export CC=clang-21 CXX=clang++-21
+You need:
+- **Rust:** https://rustup.rs
+- **Git**
+- **Visual Studio 2022 Build Tools** with "Desktop development with C++"
+- **Node 22**, only if you'll touch the Worker
 
-cargo test --workspace                    # ~10 s after the first build
-cargo run --release -p silent-app         # run twice to call yourself (first window hosts the relay)
+```powershell
+git clone https://github.com/rrblack/silent
+cd silent
+cargo test --workspace            # first build downloads libwebrtc (~200 MB) and takes a while
+cargo run --release -p silent-app
 ```
 
-The app's default relay is `http://127.0.0.1:8787`. If nothing is listening there, the first app window hosts a relay itself (loopback only). Two windows on one computer can therefore call each other with nothing else running. To test across machines, run the relay on one of them:
+For Android work, also install Android Studio. Through it (SDK Manager), install SDK Platform 35 and NDK 28.2.13676358. Then run:
 
-```sh
-SILENT_RELAY_ADDR=0.0.0.0:8787 cargo run -p silent-relay
+```powershell
+rustup target add aarch64-linux-android
+cargo install cargo-ndk
+$env:ANDROID_NDK_HOME = "$env:LOCALAPPDATA\Android\Sdk\ndk\28.2.13676358"
+bash android/build-native.sh      # Git Bash or WSL; builds the Rust engine for Android
+cd android; .\gradlew assembleDebug
 ```
 
-Then set Settings → Relay server to `http://<that machine's LAN IP>:8787` on the others. For different networks, deploy the Worker (below).
+You can skip all of that and just download `silent-android` from CI.
 
-Useful environment variables:
+## 3. Testing (do this first; this is where real bugs will show up)
 
-- `SILENT_TEST_PATTERN=1`: the camera sends a moving 60 fps pattern.
-- `SILENT_NO_AUDIO=1`: don't open audio devices.
-- `SILENT_LOG=debug,silent_engine=trace`: verbose logs.
-- `SILENT_RELAY_URL=...`: default relay.
+Every check below needs real hardware. When something is off, send the **Stats** sheet text, a screenshot, and for Android the output of `adb logcat -s silent AndroidRuntime`.
 
-The screen share picker always includes **"Test pattern (diagnostics)"**. Use it to separate encoder and network problems from capture problems.
+### A. One PC, two windows
+1. Download `silent-Windows`, unzip it, and open `silent.exe` twice.
+   - Windows SmartScreen will warn about an unknown publisher: click **More info**, then **Run anyway**.
+2. Window 1: type a name, click **Start a room**, then **Copy**. Window 2: paste the code and click **Join**.
+3. Check each of these:
+   - [ ] Both windows connect, and **Verify** shows the same four words in both.
+   - [ ] Chat works both ways.
+   - [ ] **Share screen → Test pattern**: Stats shows around 60 fps.
+   - [ ] **Share screen** with a real screen, then a window.
+   - [ ] **Camera** turns on and shows your webcam.
+   - [ ] Mic works. Both windows share one mic and speaker, so expect feedback; headphones help.
+   - [ ] **Stats** names the encoder. `NVENC`, `MediaFoundation` or `VideoToolbox` means hardware; `libvpx` or `OpenH264` means software.
 
-The **Stats** button in a call shows, per friend:
+### B. Two devices on the same Wi-Fi (PC + Android phone)
+1. On the PC, run `silent-relay.exe`. Allow it through Windows Firewall, then find the PC's IP with `ipconfig` (for example `192.168.1.23`).
+2. **PC app:** set Settings → Relay server to `http://127.0.0.1:8787`, then **Start a room**.
+3. **Phone:** install `app-debug.apk` and grant the camera, microphone and notification permissions. Set Settings → Relay server to `http://192.168.1.23:8787`, then join with the code.
+4. Check each of these:
+   - [ ] Voice both ways, with no echo on speakers.
+   - [ ] The phone camera shows upright on the PC.
+   - [ ] Screen share works in both directions.
+   - [ ] Chat works.
+   - [ ] Verify words match on both screens.
+   - [ ] Stats on the phone names the encoder (`c2.*` or `MediaCodec` means hardware).
+   - [ ] The call keeps going with the phone screen off or the app in the background.
 
-- resolution and fps sent and received
-- the encoder and decoder names
-- target bitrate
-- what limits quality (`cpu` or `bandwidth`)
-- round-trip time
+### C. Over the internet (after section 4)
+- [ ] A friend on another network joins.
+- [ ] With "Hide my IP" on, the call still connects. This needs TURN.
+- [ ] Four people at once: check CPU and battery.
 
-## Test plan (needs real machines)
+## 4. Deploying the relay (5 minutes, free)
 
-Report the Stats sheet text and anything odd for each step.
+Calls between different networks need the relay online. You already have a Cloudflare account from your portfolio.
 
-### 1. Builds
-- [ ] Windows 11: `cargo build --release -p silent-app`. This is the first Windows build ever. webrtc-sys may need a specific MSVC or Windows SDK version; follow its error messages.
-- [ ] macOS (Apple Silicon): same.
-- [ ] Linux (Ubuntu 24.04 desktop): same, with clang 21.
-
-### 2. Same machine, two instances
-- [ ] Start a room, copy the code, join from the second instance. Both show the same safety words under Verify.
-- [ ] Chat both ways.
-- [ ] Screen share → "Test pattern (diagnostics)". Expect ~60 fps received in Stats.
-- [ ] Screen share → a real screen and then a window:
-  - **macOS:** expect the Screen Recording permission prompt, then a restart of the app.
-  - **Wayland:** use "Choose with the system picker…" (portal dialog).
-  - **Windows:** no prompt.
-- [ ] Camera on. **macOS:** camera permission prompt on first launch.
-
-### 3. Two machines, same network
-- [ ] Voice both ways. Check for echo with speakers (not headphones) on both ends; WebRTC's echo canceller should handle it.
-- [ ] Mute, then unmute.
-- [ ] 1080p60 screen share of a game or video (Settings → Screen share → Motion). In Stats, check:
-  - Is `you send` around 60 fps?
-  - What encoder does it name: `libvpx`/`OpenH264` (software), or `NVENC`/`VideoToolbox`/`MediaFoundation` (hardware)?
-  - Does it say "limited by cpu"?
-- [ ] The Detail profile with text and code: is it sharp?
-- [ ] Camera at High (1080p60).
-
-### 4. Different networks (needs the Worker deployed, ideally with TURN)
-- [ ] Friend on another home network or mobile hotspot connects.
-- [ ] "Hide my IP from friends" on: the call still connects (needs TURN credentials on the Worker).
-
-### 5. Four people
-- [ ] 4 machines (or 2 machines × 2 instances). All tiles show, Verify lists 3 friends each.
-- [ ] CPU usage with everyone's camera on plus one 1080p60 screen share.
-
-## Deploying the relay
-
-```sh
-cd signal && npm ci
+```powershell
+cd signal
+npm ci
 npx wrangler login
-npx wrangler deploy                       # prints https://silent-signal.<account>.workers.dev
-# optional TURN (Cloudflare dashboard → Realtime → TURN → create key):
-npx wrangler secret put TURN_KEY_ID
-npx wrangler secret put TURN_KEY_API_TOKEN
+npx wrangler deploy        # prints https://silent-signal.<your-account>.workers.dev
 ```
 
-Then build the app with that URL as the default:
+**Optional TURN**, so calls work through strict networks and "Hide my IP" works:
+1. In the Cloudflare dashboard, go to Realtime → TURN → Create key.
+2. Store the key in the Worker:
+   ```powershell
+   npx wrangler secret put TURN_KEY_ID
+   npx wrangler secret put TURN_KEY_API_TOKEN
+   ```
+3. The TURN endpoint in `signal/src/index.ts` was written from memory of Cloudflare's docs. Check it against the current docs when you enable TURN.
 
-```sh
-SILENT_RELAY_URL=https://silent-signal.<account>.workers.dev cargo build --release -p silent-app
-```
+**Bake the URL into the builds** so nobody has to type it. Ask Claude to add the URL as `SILENT_RELAY_URL` in `ci.yml` for the desktop builds, and as `-PsilentRelayUrl=` for the Android build.
 
-The TURN endpoint in `signal/src/index.ts` is `POST https://rtc.live.cloudflare.com/v1/turn/keys/{id}/credentials/generate-ice-servers`, written from memory of Cloudflare's docs. Check it against current docs when enabling TURN. The parser accepts both the array and the object response shape.
+## 5. Known gaps and quirks
 
-## Android
+- **No settings are saved.** The name and relay URL must be retyped on every launch, because of the "nothing stored" rule. It's the owner's call whether to remember them locally.
+- **Builds aren't signed.** Windows SmartScreen warns, and macOS needs `xattr -d com.apple.quarantine silent`.
+- **CPU-based video rendering.** Fine for tiles; a GPU path is needed for several 1080p60 streams at once.
+- **No device pickers.** The app uses the default mic, speaker and first camera.
+- **No reconnect.** A dropped network connection shows "Connection lost" instead of recovering.
+- **Room squatting.** Someone with a wrong code can hold one of the 4 slots (they can't see or hear anything). See `docs/SECURITY.md`.
+- **Android:** first run on a device is untested. Remote video is capped at 30 fps and 960 px for camera tiles, by design for battery.
 
-**What exists:**
-- The engine runs unchanged on Android: the same Rust core, PAKE and WebRTC mesh as desktop. The app captures and pushes frames itself, so desktop capture (nokhwa, DesktopCapturer) is compiled out.
-- The bridge is `crates/silent-ffi` (UniFFI) plus one JNI function, `SilentNative.init(context)`, which hands libwebrtc the Java VM and app context.
-- The app is in `android/` and is written in Kotlin with Jetpack Compose:
-  - camera through CameraX (`CameraFeed.kt`)
-  - screen sharing through MediaProjection in a foreground service (`ScreenShareService.kt`)
-  - a microphone foreground service and audio routing (`CallService.kt`)
-- Remote video arrives as upright RGBA frames, capped at 960 px on the long edge (camera) and 1920 px (screen), at 30 fps. Frames are copied into a ring of reused bitmaps.
-- Phone camera frames carry a rotation flag. `silent-engine/src/render.rs` rotates them for display on every platform, desktop included.
+## 6. Next steps, in order
 
-**What was verified (in the container, no device):**
-- `silent-ffi/tests/ffi.rs` runs the exact API Kotlin uses (create, join, chat, pushed rotated camera frames, stats, leave) end to end on the host.
-- `pushed_frames_arrive_upright` checks that 640x480 frames sent with a 90° rotation arrive as a 480x640 image.
-- The APK builds and contains the engine, JNA and 479 libwebrtc Java classes. The library exports all the UniFFI and `Java_livekit_org_webrtc_*` symbols.
+1. **Hardware test pass** (section 3), then fix what breaks. This is the most valuable next step.
+2. **Deploy the relay** (section 4) and bake its URL into the builds.
+3. **Hardware encoding.** If Stats shows software encoding on a capable GPU or phone, prefer H.264 (`RtpTransceiver::set_codec_preferences`) and try `RtpSender::set_video_encoder_backend(Hardware)`.
+4. **Device pickers:** mic, speaker and camera selection, plus per-friend volume.
+5. **Reconnect:** an ICE restart when the network changes.
+6. **Desktop GPU rendering:** Slint wgpu interop with an I420 shader.
+7. **Packaging:**
+   - Velopack installers with signed auto-updates
+   - Windows signing (Azure Trusted Signing)
+   - Apple Developer ID plus notarization
+   - AppImage or Flatpak for Linux
+8. **iOS.** Reuse `silent-ffi` with Swift bindings (`uniffi-bindgen generate --language swift`) and build a SwiftUI app, mirroring `android/`:
+   - camera through AVFoundation
+   - screen sharing through a ReplayKit Broadcast Upload Extension (a separate process with a 50 MB memory limit)
+   - CallKit for background audio
 
-**Not verified: it has never run on a phone.** Things to watch for on the first launch:
-- Crash on start: check `adb logcat -s silent AndroidRuntime`. Most likely a JNI or class-loading problem in `SilentNative.init` or JNA.
-- No audio: libwebrtc's Android audio module runs through its Java classes (`livekit.org.webrtc.audio.*`); check logcat for `WebRtcAudioRecord`.
-- Camera frames rotated wrongly or mirrored.
-- Screen share on Android 14+ needs the consent dialog every time. This is expected.
+   It needs a Mac (CI's macOS runners can build it) and an **Apple Developer account ($99/yr)** to install on any iPhone.
+9. **Room squatting mitigation** and an **independent security review** before inviting people beyond close friends.
 
-**Phone test plan:**
-1. On a PC, run `silent-relay` (it listens on the LAN by default now) and note the PC's IP address.
-2. On the phone, install the APK, then set Settings → Relay server to `http://<PC IP>:8787`.
-3. On the PC, run the desktop app with Settings → Relay server set to `http://127.0.0.1:8787`. Start a room there and join it from the phone.
-4. Check the following:
-   - safety words match
-   - chat works both ways
-   - phone camera shows upright on the PC
-   - PC screen share plays on the phone
-   - phone screen share plays on the PC
-   - voice works both ways
-   - Stats shows the encoder in use (on phones it should be a `MediaCodec`/`c2.*` hardware name)
+## 7. Decisions waiting on you
 
-## libwebrtc binding gotchas found the hard way
+| Decision | Options | Why it matters |
+|---|---|---|
+| License | none (private), MIT/Apache, AGPL | Needed before making the repo public. |
+| Relay URL | free `*.workers.dev` or a custom domain | Gets baked into every build. |
+| Remember settings locally? | no (current) / name + relay URL only | Convenience vs. the "nothing stored" promise. |
+| Code signing | Azure Trusted Signing (~$10/mo), Apple Developer ($99/yr) | Removes install warnings; Apple's is required for iOS. |
+| Public or private | | CI minutes: private repos get 2,000 free minutes a month, and each macOS minute counts as 10. |
 
-The crate is `libwebrtc 0.3.52` (LiveKit, pinned with `=`). These are worth knowing before touching `crates/silent-engine/src/room.rs`:
+## 8. How to start the next Claude session
 
-1. **`OfferOptions::default()` disables receiving.** Its `offer_to_receive_*: false` turns every transceiver send-only. Always pass `true`.
-2. **The answerer must add its tracks *after* `set_remote_description(offer)`.** Only then are they attached to the offer's transceivers. The offerer uses `add_transceiver(.., SendRecv)`.
-3. **`RtpSender::set_track(None)` segfaults** (webrtc-sys dereferences the null track). To stop video, set `encodings[].active = false` instead (`media::apply_encoding`).
-4. **`NativeVideoSource::new` feeds 10 fps black keepalive frames** until the first real frame. They were encoded on every connection and saturated 4 cores in a 4-person test, hence point 3.
-5. **`to_i420` and `to_argb` can't be called on `dyn VideoBuffer`** from outside the crate. Downcast with `as_i420()`, `as_nv12()` and so on (`silent-app/src/video.rs`).
-6. **The Linux link needs GLib/GIO** for the Wayland portal (`silent-engine/build.rs`).
+Open this repo in a Claude project and paste:
 
-## Next steps, roughly in order
+> Read HANDOFF.md and CLAUDE.md. I'm about to test Silent on my Windows PC and Android phone following section 3. Help me through it step by step, and fix whatever breaks.
 
-0. **iOS:** reuse `silent-ffi` with Swift bindings (`--language swift`) and a SwiftUI app. Camera through AVFoundation; screen sharing needs a ReplayKit Broadcast Upload Extension (a separate process with a 50 MB memory limit). Needs a Mac for local work, plus an Apple Developer account for TestFlight.
+Or, to skip testing for now:
 
-1. **Get it on GitHub.** This session couldn't create the repo (see below). Push, then let CI produce Windows and macOS builds.
-2. **Hardware test pass**, the test plan above.
-3. **Hardware encoder and codec choice.** If Stats shows software encoding on capable GPUs, prefer H.264 via `RtpTransceiver::set_codec_preferences` and try `RtpSender::set_video_encoder_backend(Hardware)`. Encoding once and sending to all peers (`NativeVideoSource::new_encoded`) is a later optimization.
-4. **Device pickers:** microphone and speaker selection (factory `set_recording_device`/`set_playout_device`), camera selection, per-friend volume.
-5. **Rendering:** frames are converted to RGBA on the CPU and uploaded by Slint. Fine for 720p tiles; for 1080p60 several times over, move to a GPU path (Slint wgpu interop with an I420 shader).
-6. **Resilience:** ICE restart on network change (`PeerConnectionLost` currently just shows a status).
-7. **Screen share audio** (system audio capture).
-8. **Packaging:** Velopack for installers and signed auto-updates, Apple Developer ID plus notarization, Windows code signing (Azure Trusted Signing), AppImage or Flatpak.
-9. **Room squatting mitigation** and an **independent security review** (see docs/SECURITY.md).
-
-## Decisions waiting on the owner
-
-- **Repository:** create `rrblack/silent` (private) on GitHub. This session's GitHub integration lacked permission to create repos.
-- **License:** none set yet (`Cargo.toml` has no `license`).
-- **Relay domain:** a `workers.dev` URL or a custom domain.
-- **Local settings:** whether to remember the display name and quality settings between launches. Currently nothing is written to disk.
-- **Signing accounts:** Apple Developer ($99/yr) and Windows code signing, needed before sharing builds with friends.
+> Read HANDOFF.md and CLAUDE.md, then deploy the relay (section 4) with me and bake the URL into the CI builds.
