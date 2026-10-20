@@ -52,11 +52,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-14]
+        os: [ubuntu-24.04, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # libwebrtc's macOS bindings need a recent libc++ (they are built with Xcode 26).
+      - name: Newest Xcode
+        if: runner.os == 'macOS'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Show Xcode
+        if: runner.os == 'macOS'
+        run: xcodebuild -version
 
       - name: Linux dependencies (clang 21 for libwebrtc, UI, capture, audio)
         if: runner.os == 'Linux'

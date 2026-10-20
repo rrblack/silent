@@ -1,0 +1,7 @@
+# The prebuilt libwebrtc on Windows links the static C runtime (/MT), so
+# everything else must too or the linker sees two copies of the CRT.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
