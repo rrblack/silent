@@ -29,7 +29,11 @@ fn unique_nameplate() -> u16 {
 }
 
 async fn connect(base: &str, nameplate: u16, intent: Intent) -> Ws {
-    let url = format!("{}{}", base.replacen("http", "ws", 1), room_path(nameplate, intent));
+    let url = format!(
+        "{}{}",
+        base.replacen("http", "ws", 1),
+        room_path(nameplate, intent)
+    );
     tokio_tungstenite::connect_async(url).await.unwrap().0
 }
 
@@ -47,7 +51,9 @@ async fn recv(ws: &mut Ws) -> ServerMsg {
 }
 
 async fn send(ws: &mut Ws, msg: &ClientMsg) {
-    ws.send(Message::Text(serde_json::to_string(msg).unwrap().into())).await.unwrap();
+    ws.send(Message::Text(serde_json::to_string(msg).unwrap().into()))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -56,20 +62,58 @@ async fn room_lifecycle() {
     let n = unique_nameplate();
 
     let mut a = connect(&base, n, Intent::Create).await;
-    let ServerMsg::Welcome { you: a_id, peers, ice } = recv(&mut a).await else { panic!() };
+    let ServerMsg::Welcome {
+        you: a_id,
+        peers,
+        ice,
+    } = recv(&mut a).await
+    else {
+        panic!()
+    };
     assert!(peers.is_empty());
     assert!(!ice.ice_servers.is_empty());
 
     let mut b = connect(&base, n, Intent::Join).await;
-    let ServerMsg::Welcome { you: b_id, peers, .. } = recv(&mut b).await else { panic!() };
+    let ServerMsg::Welcome {
+        you: b_id, peers, ..
+    } = recv(&mut b).await
+    else {
+        panic!()
+    };
     assert_eq!(peers, vec![a_id]);
     assert_ne!(a_id, b_id);
     assert_eq!(recv(&mut a).await, ServerMsg::Joined { peer: b_id });
 
-    send(&mut b, &ClientMsg::Relay { to: a_id, data: "hi".into() }).await;
-    assert_eq!(recv(&mut a).await, ServerMsg::Relay { from: b_id, data: "hi".into() });
-    send(&mut a, &ClientMsg::Relay { to: b_id, data: "yo".into() }).await;
-    assert_eq!(recv(&mut b).await, ServerMsg::Relay { from: a_id, data: "yo".into() });
+    send(
+        &mut b,
+        &ClientMsg::Relay {
+            to: a_id,
+            data: "hi".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        recv(&mut a).await,
+        ServerMsg::Relay {
+            from: b_id,
+            data: "hi".into()
+        }
+    );
+    send(
+        &mut a,
+        &ClientMsg::Relay {
+            to: b_id,
+            data: "yo".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        recv(&mut b).await,
+        ServerMsg::Relay {
+            from: a_id,
+            data: "yo".into()
+        }
+    );
 
     b.close(None).await.unwrap();
     assert_eq!(recv(&mut a).await, ServerMsg::Left { peer: b_id });
@@ -77,7 +121,12 @@ async fn room_lifecycle() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
     let mut late = connect(&base, n, Intent::Join).await;
-    assert_eq!(recv(&mut late).await, ServerMsg::Error { code: RelayErrorCode::NoRoom });
+    assert_eq!(
+        recv(&mut late).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::NoRoom
+        }
+    );
 }
 
 #[tokio::test]
@@ -87,7 +136,12 @@ async fn create_on_busy_room_is_rejected() {
     let mut a = connect(&base, n, Intent::Create).await;
     recv(&mut a).await;
     let mut b = connect(&base, n, Intent::Create).await;
-    assert_eq!(recv(&mut b).await, ServerMsg::Error { code: RelayErrorCode::RoomTaken });
+    assert_eq!(
+        recv(&mut b).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::RoomTaken
+        }
+    );
 }
 
 #[tokio::test]
@@ -102,23 +156,45 @@ async fn fifth_peer_is_rejected() {
         peers.push(p);
     }
     let mut fifth = connect(&base, n, Intent::Join).await;
-    assert_eq!(recv(&mut fifth).await, ServerMsg::Error { code: RelayErrorCode::RoomFull });
+    assert_eq!(
+        recv(&mut fifth).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::RoomFull
+        }
+    );
 }
 
 #[tokio::test]
 async fn bad_requests_are_rejected() {
     let base = relay_base().await;
     let ws_base = base.replacen("http", "ws", 1);
-    for path in ["/v1/rooms/0?intent=join", "/v1/rooms/abc?intent=join", "/v1/rooms/12?intent=nope"] {
-        let (mut ws, _) = tokio_tungstenite::connect_async(format!("{ws_base}{path}")).await.unwrap();
-        assert_eq!(recv(&mut ws).await, ServerMsg::Error { code: RelayErrorCode::BadRequest }, "{path}");
+    for path in [
+        "/v1/rooms/0?intent=join",
+        "/v1/rooms/abc?intent=join",
+        "/v1/rooms/12?intent=nope",
+    ] {
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("{ws_base}{path}"))
+            .await
+            .unwrap();
+        assert_eq!(
+            recv(&mut ws).await,
+            ServerMsg::Error {
+                code: RelayErrorCode::BadRequest
+            },
+            "{path}"
+        );
     }
 
     let n = unique_nameplate();
     let mut a = connect(&base, n, Intent::Create).await;
     recv(&mut a).await;
     a.send(Message::Text("not json".into())).await.unwrap();
-    assert_eq!(recv(&mut a).await, ServerMsg::Error { code: RelayErrorCode::BadRequest });
+    assert_eq!(
+        recv(&mut a).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::BadRequest
+        }
+    );
 }
 
 #[tokio::test]
@@ -126,10 +202,17 @@ async fn oversized_relay_data_is_rejected() {
     let base = relay_base().await;
     let n = unique_nameplate();
     let mut a = connect(&base, n, Intent::Create).await;
-    let ServerMsg::Welcome { you, .. } = recv(&mut a).await else { panic!() };
+    let ServerMsg::Welcome { you, .. } = recv(&mut a).await else {
+        panic!()
+    };
     let mut b = connect(&base, n, Intent::Join).await;
     recv(&mut b).await;
     let data = "x".repeat(silent_core::proto::MAX_RELAY_DATA + 1);
     send(&mut b, &ClientMsg::Relay { to: you, data }).await;
-    assert_eq!(recv(&mut b).await, ServerMsg::Error { code: RelayErrorCode::TooLarge });
+    assert_eq!(
+        recv(&mut b).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::TooLarge
+        }
+    );
 }

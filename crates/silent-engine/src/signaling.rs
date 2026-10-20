@@ -62,7 +62,13 @@ pub async fn connect(
             .map_err(|_| SignalError::NoWelcome)?;
         match msg {
             Some(Ok(Message::Text(t))) => match serde_json::from_str::<ServerMsg>(&t) {
-                Ok(ServerMsg::Welcome { you, peers, ice }) => break Welcome { me: you, peers, ice },
+                Ok(ServerMsg::Welcome { you, peers, ice }) => {
+                    break Welcome {
+                        me: you,
+                        peers,
+                        ice,
+                    }
+                }
                 Ok(ServerMsg::Error { code }) => return Err(code.into()),
                 _ => continue,
             },
@@ -109,5 +115,11 @@ pub async fn connect(
         let _ = sink.close().await;
     });
 
-    Ok((welcome, SignalLink { outbound: out_tx, inbound: in_rx }))
+    Ok((
+        welcome,
+        SignalLink {
+            outbound: out_tx,
+            inbound: in_rx,
+        },
+    ))
 }

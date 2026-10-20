@@ -45,7 +45,10 @@ impl PairHandshake {
     }
 
     pub fn finish(self, inbound: &[u8]) -> Result<PairKeys, HandshakeError> {
-        let mut shared = self.state.finish(inbound).map_err(|_| HandshakeError::Malformed)?;
+        let mut shared = self
+            .state
+            .finish(inbound)
+            .map_err(|_| HandshakeError::Malformed)?;
         let keys = PairKeys::derive(&shared, self.me, self.them);
         shared.zeroize();
         Ok(keys)
@@ -81,17 +84,32 @@ impl PairKeys {
         let mut lo_to_hi = [0u8; 32];
         let mut hi_to_lo = [0u8; 32];
         let mut sas = [0u8; 32];
-        hk.expand(b"seal lo->hi", &mut lo_to_hi).expect("valid length");
-        hk.expand(b"seal hi->lo", &mut hi_to_lo).expect("valid length");
+        hk.expand(b"seal lo->hi", &mut lo_to_hi)
+            .expect("valid length");
+        hk.expand(b"seal hi->lo", &mut hi_to_lo)
+            .expect("valid length");
         hk.expand(b"safety words", &mut sas).expect("valid length");
-        let (send, recv) = if me < them { (lo_to_hi, hi_to_lo) } else { (hi_to_lo, lo_to_hi) };
+        let (send, recv) = if me < them {
+            (lo_to_hi, hi_to_lo)
+        } else {
+            (hi_to_lo, lo_to_hi)
+        };
         lo_to_hi.zeroize();
         hi_to_lo.zeroize();
-        Self { me, them, send, recv, sas }
+        Self {
+            me,
+            them,
+            send,
+            recv,
+            sas,
+        }
     }
 
     pub fn split(&self) -> (Sealer, Opener) {
-        (Sealer::new(&self.send, self.me, self.them), Opener::new(&self.recv, self.them, self.me))
+        (
+            Sealer::new(&self.send, self.me, self.them),
+            Opener::new(&self.recv, self.them, self.me),
+        )
     }
 
     pub fn safety_words(&self, my_fingerprint: &str, their_fingerprint: &str) -> [&'static str; 4] {

@@ -54,7 +54,10 @@ struct Admitted {
 }
 
 pub fn router(config: RelayConfig) -> Router {
-    let state = AppState { rooms: Arc::default(), config: Arc::new(config) };
+    let state = AppState {
+        rooms: Arc::default(),
+        config: Arc::new(config),
+    };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/rooms/{nameplate}", get(room))
@@ -71,7 +74,10 @@ async fn room(
     Query(query): Query<HashMap<String, String>>,
     State(state): State<AppState>,
 ) -> Response {
-    let nameplate = nameplate.parse::<u16>().ok().filter(|n| (1..=NAMEPLATE_MAX).contains(n));
+    let nameplate = nameplate
+        .parse::<u16>()
+        .ok()
+        .filter(|n| (1..=NAMEPLATE_MAX).contains(n));
     let intent = query.get("intent").and_then(|i| Intent::parse(i));
     ws.max_message_size(MAX_RELAY_DATA + 1024)
         .on_upgrade(move |socket| async move {
@@ -89,10 +95,16 @@ async fn reject(mut socket: WebSocket, code: RelayErrorCode) {
 }
 
 fn text(msg: &ServerMsg) -> Message {
-    Message::Text(Utf8Bytes::from(serde_json::to_string(msg).expect("serializable")))
+    Message::Text(Utf8Bytes::from(
+        serde_json::to_string(msg).expect("serializable"),
+    ))
 }
 
-async fn admit(state: &AppState, nameplate: u16, intent: Intent) -> Result<Admitted, RelayErrorCode> {
+async fn admit(
+    state: &AppState,
+    nameplate: u16,
+    intent: Intent,
+) -> Result<Admitted, RelayErrorCode> {
     let mut rooms = state.rooms.lock().await;
     let exists = rooms.get(&nameplate).is_some_and(|r| !r.peers.is_empty());
     match intent {
@@ -136,14 +148,23 @@ async fn forward(state: &AppState, nameplate: u16, from: PeerId, to: PeerId, dat
 }
 
 async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: Intent) {
-    let Admitted { me, peers, tx, mut rx } = match admit(&state, nameplate, intent).await {
+    let Admitted {
+        me,
+        peers,
+        tx,
+        mut rx,
+    } = match admit(&state, nameplate, intent).await {
         Ok(admitted) => admitted,
         Err(code) => return reject(socket, code).await,
     };
     tracing::debug!(room = nameplate, peer = me, "joined");
 
     let (mut sink, mut stream) = socket.split();
-    let _ = tx.try_send(ServerMsg::Welcome { you: me, peers, ice: state.config.ice.clone() });
+    let _ = tx.try_send(ServerMsg::Welcome {
+        you: me,
+        peers,
+        ice: state.config.ice.clone(),
+    });
     let mut writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if sink.send(text(&msg)).await.is_err() {
@@ -196,7 +217,11 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
         let _ = tx.try_send(ServerMsg::Error { code });
     }
     drop(tx);
-    if !writer_done && tokio::time::timeout(DRAIN_TIMEOUT, &mut writer).await.is_err() {
+    if !writer_done
+        && tokio::time::timeout(DRAIN_TIMEOUT, &mut writer)
+            .await
+            .is_err()
+    {
         writer.abort();
     }
     tracing::debug!(room = nameplate, peer = me, "left");

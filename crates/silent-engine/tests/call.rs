@@ -28,7 +28,11 @@ async fn relay() -> String {
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let config = silent_relay::RelayConfig { ice: IceConfig { ice_servers: vec![] } };
+    let config = silent_relay::RelayConfig {
+        ice: IceConfig {
+            ice_servers: vec![],
+        },
+    };
     tokio::spawn(silent_relay::serve(listener, config));
     format!("http://{addr}")
 }
@@ -53,7 +57,11 @@ struct Member {
 impl Member {
     fn new(mut room: Room) -> Self {
         let events = room.take_events();
-        Self { room, events, videos: HashMap::new() }
+        Self {
+            room,
+            events,
+            videos: HashMap::new(),
+        }
     }
 
     async fn video(&mut self, peer: PeerId, kind: VideoKind) -> RtcVideoTrack {
@@ -61,9 +69,11 @@ impl Member {
             return track.clone();
         }
         self.until(|e| match e {
-            RoomEvent::RemoteVideo { peer: p, kind: k, track } if *p == peer && *k == kind => {
-                Some(track.clone())
-            }
+            RoomEvent::RemoteVideo {
+                peer: p,
+                kind: k,
+                track,
+            } if *p == peer && *k == kind => Some(track.clone()),
             _ => None,
         })
         .await
@@ -111,7 +121,12 @@ async fn two_friends_connect_chat_and_share_screen() {
 
     let mut alice = Member::new(engine.create_room(settings(&relay, "Alice")).await.unwrap());
     let code = alice.room.code().clone();
-    let mut bob = Member::new(engine.join_room(settings(&relay, "Bob"), code).await.unwrap());
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
 
     let bob_name = alice
         .until(|e| match e {
@@ -126,7 +141,8 @@ async fn two_friends_connect_chat_and_share_screen() {
     assert_eq!(a_words[&bob.room.me()], b_words[&alice.room.me()]);
     assert!(!a_words[&bob.room.me()].contains(&"?"));
 
-    bob.until(|e| matches!(e, RoomEvent::PeerMedia { .. }).then_some(())).await;
+    bob.until(|e| matches!(e, RoomEvent::PeerMedia { .. }).then_some(()))
+        .await;
     alice.room.send_chat("hi bob");
     let (from, text) = bob
         .until(|e| match e {
@@ -147,7 +163,10 @@ async fn two_friends_connect_chat_and_share_screen() {
     assert!(screen_on);
 
     let mut stream = NativeVideoStream::new(track);
-    let warmup = tokio::time::timeout(STEP, stream.next()).await.expect("no screen frames").unwrap();
+    let warmup = tokio::time::timeout(STEP, stream.next())
+        .await
+        .expect("no screen frames")
+        .unwrap();
     assert!(warmup.buffer.width() > 0);
     let started = Instant::now();
     let mut frames = 0u32;
@@ -159,7 +178,10 @@ async fn two_friends_connect_chat_and_share_screen() {
         }
     }
     let fps = frames as f64 / started.elapsed().as_secs_f64();
-    println!("screen share received: {fps:.1} fps, up to {}x{}", max_size.0, max_size.1);
+    println!(
+        "screen share received: {fps:.1} fps, up to {}x{}",
+        max_size.0, max_size.1
+    );
     assert!(frames > 10, "only {frames} frames in 4s");
 
     alice.room.share_screen(None);
@@ -191,21 +213,35 @@ async fn wrong_code_is_detected_and_isolated() {
     parts[3] = if parts[3] == "oak" { "owl" } else { "oak" };
     let wrong = parts.join("-").parse().unwrap();
 
-    let mut mallory = Member::new(engine.join_room(settings(&relay, "Mallory"), wrong).await.unwrap());
-    alice.until(|e| matches!(e, RoomEvent::PeerWrongCode { .. }).then_some(())).await;
-    mallory.until(|e| matches!(e, RoomEvent::PeerWrongCode { .. }).then_some(())).await;
+    let mut mallory = Member::new(
+        engine
+            .join_room(settings(&relay, "Mallory"), wrong)
+            .await
+            .unwrap(),
+    );
+    alice
+        .until(|e| matches!(e, RoomEvent::PeerWrongCode { .. }).then_some(()))
+        .await;
+    mallory
+        .until(|e| matches!(e, RoomEvent::PeerWrongCode { .. }).then_some(()))
+        .await;
 
     let quiet = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match alice.events.recv().await {
-                Some(RoomEvent::PeerVerified { .. } | RoomEvent::PeerConnected { .. }) => return true,
+                Some(RoomEvent::PeerVerified { .. } | RoomEvent::PeerConnected { .. }) => {
+                    return true
+                }
                 Some(_) => continue,
                 None => return false,
             }
         }
     })
     .await;
-    assert!(quiet.is_err() || !quiet.unwrap(), "wrong-code peer must never be verified");
+    assert!(
+        quiet.is_err() || !quiet.unwrap(),
+        "wrong-code peer must never be verified"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -213,12 +249,18 @@ async fn four_friends_full_mesh_and_fifth_is_turned_away() {
     let relay = relay().await;
     let engines: Vec<Engine> = (0..5).map(|_| Engine::new()).collect();
 
-    let first = engines[0].create_room(settings(&relay, "P1")).await.unwrap();
+    let first = engines[0]
+        .create_room(settings(&relay, "P1"))
+        .await
+        .unwrap();
     let code = first.code().clone();
     let mut members = vec![Member::new(first)];
-    for i in 1..4 {
+    for (i, engine) in engines.iter().enumerate().take(4).skip(1) {
         let name = format!("P{}", i + 1);
-        let room = engines[i].join_room(settings(&relay, &name), code.clone()).await.unwrap();
+        let room = engine
+            .join_room(settings(&relay, &name), code.clone())
+            .await
+            .unwrap();
         members.push(Member::new(room));
     }
 
@@ -229,7 +271,11 @@ async fn four_friends_full_mesh_and_fifth_is_turned_away() {
     for (i, a) in members.iter().enumerate() {
         for (j, b) in members.iter().enumerate() {
             if i != j {
-                assert_eq!(words[i][&b.room.me()], words[j][&a.room.me()], "pair {i}-{j}");
+                assert_eq!(
+                    words[i][&b.room.me()],
+                    words[j][&a.room.me()],
+                    "pair {i}-{j}"
+                );
             }
         }
     }

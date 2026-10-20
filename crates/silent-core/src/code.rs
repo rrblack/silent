@@ -86,7 +86,7 @@ impl FromStr for InviteCode {
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let normalized = input.trim().to_ascii_lowercase();
         let mut parts = normalized
-            .split(|c: char| c == '-' || c == ' ' || c == '.' || c == '_')
+            .split(['-', ' ', '.', '_'])
             .filter(|p| !p.is_empty());
 
         let nameplate: u16 = parts
@@ -137,10 +137,22 @@ mod tests {
     #[test]
     fn rejects_bad_codes() {
         assert_eq!("".parse::<InviteCode>(), Err(CodeError::Format));
-        assert_eq!("0-amber-falcon-river".parse::<InviteCode>(), Err(CodeError::Nameplate));
-        assert_eq!("10000-amber-falcon-river".parse::<InviteCode>(), Err(CodeError::Nameplate));
-        assert_eq!("12-amber-falcon".parse::<InviteCode>(), Err(CodeError::Format));
-        assert_eq!("12-amber-falcon-river-oak".parse::<InviteCode>(), Err(CodeError::Format));
+        assert_eq!(
+            "0-amber-falcon-river".parse::<InviteCode>(),
+            Err(CodeError::Nameplate)
+        );
+        assert_eq!(
+            "10000-amber-falcon-river".parse::<InviteCode>(),
+            Err(CodeError::Nameplate)
+        );
+        assert_eq!(
+            "12-amber-falcon".parse::<InviteCode>(),
+            Err(CodeError::Format)
+        );
+        assert_eq!(
+            "12-amber-falcon-river-oak".parse::<InviteCode>(),
+            Err(CodeError::Format)
+        );
         assert_eq!(
             "12-amber-falcon-zzz".parse::<InviteCode>(),
             Err(CodeError::UnknownWord("zzz".into()))

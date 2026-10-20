@@ -1,6 +1,7 @@
 //! Silent's call engine: relay signaling, pairwise PAKE, and a WebRTC mesh of
 //! up to four peers carrying audio, camera, screen share and chat.
 
+pub mod camera;
 pub mod capture;
 pub mod media;
 mod room;
@@ -42,7 +43,9 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new() -> Self {
-        Self { factory: PeerConnectionFactory::default() }
+        Self {
+            factory: PeerConnectionFactory::default(),
+        }
     }
 
     /// Opens a new room with a fresh invite code.
@@ -51,7 +54,13 @@ impl Engine {
         for _ in 0..NAMEPLATE_ATTEMPTS {
             match signaling::connect(&settings.relay_url, code.nameplate(), Intent::Create).await {
                 Ok((welcome, link)) => {
-                    return Ok(Room::start(self.factory.clone(), settings, code, welcome, link))
+                    return Ok(Room::start(
+                        self.factory.clone(),
+                        settings,
+                        code,
+                        welcome,
+                        link,
+                    ))
                 }
                 Err(SignalError::Relay(RelayErrorCode::RoomTaken)) => {
                     code = code.with_new_nameplate();
@@ -66,7 +75,13 @@ impl Engine {
     /// here: it surfaces as [`RoomEvent::PeerWrongCode`] for every peer.
     pub async fn join_room(&self, settings: Settings, code: InviteCode) -> Result<Room, RoomError> {
         match signaling::connect(&settings.relay_url, code.nameplate(), Intent::Join).await {
-            Ok((welcome, link)) => Ok(Room::start(self.factory.clone(), settings, code, welcome, link)),
+            Ok((welcome, link)) => Ok(Room::start(
+                self.factory.clone(),
+                settings,
+                code,
+                welcome,
+                link,
+            )),
             Err(SignalError::Relay(RelayErrorCode::NoRoom)) => Err(RoomError::NoSuchRoom),
             Err(SignalError::Relay(RelayErrorCode::RoomFull)) => Err(RoomError::RoomFull),
             Err(e) => Err(e.into()),

@@ -136,6 +136,9 @@ pub enum ScreenTarget {
 /// What to put on the camera track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CameraTarget {
+    /// A device index from [`crate::camera::list_cameras`].
+    Device(u32),
+    /// A moving test pattern at the profile's full resolution and frame rate.
     TestPattern,
 }
 
@@ -153,7 +156,10 @@ impl Producer {
             .name(name.into())
             .spawn(move || body(flag))
             .expect("spawn producer thread");
-        Self { stop, thread: Some(thread) }
+        Self {
+            stop,
+            thread: Some(thread),
+        }
     }
 }
 
@@ -175,11 +181,18 @@ pub(crate) struct LocalVideo {
 
 impl LocalVideo {
     fn new(factory: &PeerConnectionFactory, kind: VideoKind, encoding: Encoding) -> Self {
-        let resolution =
-            VideoResolution { width: encoding.max_width, height: encoding.max_height };
+        let resolution = VideoResolution {
+            width: encoding.max_width,
+            height: encoding.max_height,
+        };
         let source = NativeVideoSource::new(resolution, kind == VideoKind::Screen);
         let track = factory.create_video_track(kind.stream_id(), source.clone());
-        Self { source, track, encoding, producer: None }
+        Self {
+            source,
+            track,
+            encoding,
+            producer: None,
+        }
     }
 }
 
@@ -207,7 +220,10 @@ impl LocalMedia {
             (factory.create_device_audio_track(STREAM_AUDIO), None)
         } else {
             let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 100);
-            (factory.create_audio_track(STREAM_AUDIO, source.clone()), Some(source))
+            (
+                factory.create_audio_track(STREAM_AUDIO, source.clone()),
+                Some(source),
+            )
         };
         Self {
             factory: factory.clone(),

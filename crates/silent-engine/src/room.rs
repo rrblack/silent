@@ -24,15 +24,17 @@ use silent_core::proto::{
     clean_name, ChannelMsg, ClientMsg, IceConfig, MediaState, PeerFrame, ServerMsg, Signal,
     MAX_CHAT_CHARS, PROTOCOL_VERSION,
 };
-use silent_core::{fingerprint_from_sdp, InviteCode, Opener, PairHandshake, PairKeys, PeerId, Sealer};
+use silent_core::{
+    fingerprint_from_sdp, InviteCode, Opener, PairHandshake, PairKeys, PeerId, Sealer,
+};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::capture;
 use crate::media::{
     apply_encoding, test_pattern, AudioInput, CameraProfile, CameraTarget, LocalMedia, Producer,
     ScreenProfile, ScreenTarget, VideoKind, STREAM_AUDIO,
 };
 use crate::signaling::{SignalLink, Welcome};
+use crate::{camera, capture};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -48,19 +50,47 @@ pub struct Settings {
 #[derive(Debug, Clone)]
 pub enum RoomEvent {
     /// The relay announced someone; key exchange is starting.
-    PeerJoining { peer: PeerId },
+    PeerJoining {
+        peer: PeerId,
+    },
     /// They typed the same code. Their name is now known.
-    PeerVerified { peer: PeerId, name: String },
+    PeerVerified {
+        peer: PeerId,
+        name: String,
+    },
     /// They typed a different code. Nothing further is exchanged with them.
-    PeerWrongCode { peer: PeerId },
+    PeerWrongCode {
+        peer: PeerId,
+    },
     /// Direct encrypted connection is up.
-    PeerConnected { peer: PeerId, safety_words: [&'static str; 4] },
-    PeerConnectionLost { peer: PeerId },
-    PeerLeft { peer: PeerId },
-    PeerMedia { peer: PeerId, state: MediaState },
-    Chat { from: PeerId, text: String, sent_at_ms: u64 },
-    RemoteVideo { peer: PeerId, kind: VideoKind, track: RtcVideoTrack },
-    LocalMediaError { kind: VideoKind, message: String },
+    PeerConnected {
+        peer: PeerId,
+        safety_words: [&'static str; 4],
+    },
+    PeerConnectionLost {
+        peer: PeerId,
+    },
+    PeerLeft {
+        peer: PeerId,
+    },
+    PeerMedia {
+        peer: PeerId,
+        state: MediaState,
+    },
+    Chat {
+        from: PeerId,
+        text: String,
+        sent_at_ms: u64,
+    },
+    RemoteVideo {
+        peer: PeerId,
+        kind: VideoKind,
+        track: RtcVideoTrack,
+    },
+    LocalMediaError {
+        kind: VideoKind,
+        message: String,
+    },
     /// The relay connection dropped. Existing calls keep working; nobody new
     /// can join until the room is recreated.
     RelayLost,
@@ -75,12 +105,32 @@ enum Command {
 }
 
 enum Internal {
-    Ice { peer: PeerId, mid: String, mline: i32, candidate: String },
-    PcState { peer: PeerId, state: PeerConnectionState },
-    Track { peer: PeerId, kind: Option<VideoKind>, track: MediaStreamTrack },
-    DcOpen { peer: PeerId },
-    DcMessage { peer: PeerId, data: Vec<u8> },
-    CaptureFailed { kind: VideoKind, message: String },
+    Ice {
+        peer: PeerId,
+        mid: String,
+        mline: i32,
+        candidate: String,
+    },
+    PcState {
+        peer: PeerId,
+        state: PeerConnectionState,
+    },
+    Track {
+        peer: PeerId,
+        kind: Option<VideoKind>,
+        track: MediaStreamTrack,
+    },
+    DcOpen {
+        peer: PeerId,
+    },
+    DcMessage {
+        peer: PeerId,
+        data: Vec<u8>,
+    },
+    CaptureFailed {
+        kind: VideoKind,
+        message: String,
+    },
 }
 
 /// Handle to a running room. Dropping it leaves the room.
@@ -124,7 +174,11 @@ impl Room {
             factory,
             rtc_config: rtc_config(&welcome.ice, settings.relay_only),
             media,
-            media_state: MediaState { mic: true, camera: false, screen: false },
+            media_state: MediaState {
+                mic: true,
+                camera: false,
+                screen: false,
+            },
             peers: HashMap::new(),
             relay: link.outbound,
             events: ev_tx,
@@ -195,13 +249,19 @@ fn rtc_config(ice: &IceConfig, relay_only: bool) -> RtcConfiguration {
         })
         .collect();
     config.continual_gathering_policy = ContinualGatheringPolicy::GatherContinually;
-    config.ice_transport_type =
-        if relay_only { IceTransportsType::Relay } else { IceTransportsType::All };
+    config.ice_transport_type = if relay_only {
+        IceTransportsType::Relay
+    } else {
+        IceTransportsType::All
+    };
     config
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[derive(Default)]
@@ -278,7 +338,10 @@ impl Actor {
     }
 
     fn relay_frame(&self, to: PeerId, frame: PeerFrame) {
-        let _ = self.relay.send(ClientMsg::Relay { to, data: frame.encode() });
+        let _ = self.relay.send(ClientMsg::Relay {
+            to,
+            data: frame.encode(),
+        });
     }
 
     fn send_signal(&mut self, to: PeerId, signal: &Signal) {
@@ -295,7 +358,13 @@ impl Actor {
             return;
         }
         let (handshake, outbound) = PairHandshake::start(&self.code, self.me, peer);
-        self.peers.insert(peer, Peer { handshake: Some(handshake), ..Default::default() });
+        self.peers.insert(
+            peer,
+            Peer {
+                handshake: Some(handshake),
+                ..Default::default()
+            },
+        );
         self.relay_frame(peer, PeerFrame::Pake(outbound));
         self.emit(RoomEvent::PeerJoining { peer });
     }
@@ -315,8 +384,12 @@ impl Actor {
 
     fn on_pake(&mut self, from: PeerId, msg: &[u8]) {
         self.begin_pair(from);
-        let Some(peer) = self.peers.get_mut(&from) else { return };
-        let Some(handshake) = peer.handshake.take() else { return };
+        let Some(peer) = self.peers.get_mut(&from) else {
+            return;
+        };
+        let Some(handshake) = peer.handshake.take() else {
+            return;
+        };
         let keys = match handshake.finish(msg) {
             Ok(keys) => keys,
             Err(_) => {
@@ -334,16 +407,23 @@ impl Actor {
             tracing::warn!(peer = from, "could not create peer connection: {e}");
             return;
         }
-        let hello = Signal::Hello { version: PROTOCOL_VERSION, name: self.name.clone() };
+        let hello = Signal::Hello {
+            version: PROTOCOL_VERSION,
+            name: self.name.clone(),
+        };
         self.send_signal(from, &hello);
     }
 
     async fn on_sealed(&mut self, from: PeerId, sealed: &[u8]) {
-        let Some(peer) = self.peers.get_mut(&from) else { return };
+        let Some(peer) = self.peers.get_mut(&from) else {
+            return;
+        };
         if peer.rejected {
             return;
         }
-        let Some(opener) = peer.opener.as_mut() else { return };
+        let Some(opener) = peer.opener.as_mut() else {
+            return;
+        };
         let plaintext = match opener.open(sealed) {
             Ok(p) => p,
             Err(e) => {
@@ -382,12 +462,17 @@ impl Actor {
                 if version != PROTOCOL_VERSION {
                     anyhow::bail!("peer speaks protocol v{version}");
                 }
-                let Some(peer) = self.peers.get_mut(&from) else { return Ok(()) };
+                let Some(peer) = self.peers.get_mut(&from) else {
+                    return Ok(());
+                };
                 if peer.verified {
                     return Ok(());
                 }
                 peer.verified = true;
-                self.emit(RoomEvent::PeerVerified { peer: from, name: clean_name(&name) });
+                self.emit(RoomEvent::PeerVerified {
+                    peer: from,
+                    name: clean_name(&name),
+                });
                 if self.me > from {
                     self.send_offer(from).await?;
                 }
@@ -400,7 +485,12 @@ impl Actor {
                 let answer = pc.create_answer(AnswerOptions::default()).await?;
                 pc.set_local_description(answer.clone()).await?;
                 self.after_remote_description(from, &sdp).await;
-                self.send_signal(from, &Signal::Answer { sdp: answer.to_string() });
+                self.send_signal(
+                    from,
+                    &Signal::Answer {
+                        sdp: answer.to_string(),
+                    },
+                );
             }
             Signal::Answer { sdp } => {
                 let pc = self.pc(from)?;
@@ -408,11 +498,18 @@ impl Actor {
                 pc.set_remote_description(answer).await?;
                 self.after_remote_description(from, &sdp).await;
             }
-            Signal::Ice { mid, mline, candidate } => {
-                let Some(peer) = self.peers.get_mut(&from) else { return Ok(()) };
+            Signal::Ice {
+                mid,
+                mline,
+                candidate,
+            } => {
+                let Some(peer) = self.peers.get_mut(&from) else {
+                    return Ok(());
+                };
                 if peer.remote_described {
                     let pc = self.pc(from)?;
-                    pc.add_ice_candidate(IceCandidate::parse(&mid, mline, &candidate)?).await?;
+                    pc.add_ice_candidate(IceCandidate::parse(&mid, mline, &candidate)?)
+                        .await?;
                 } else {
                     peer.pending_ice.push((mid, mline, candidate));
                 }
@@ -438,12 +535,19 @@ impl Actor {
         };
         let offer = pc.create_offer(options).await?;
         pc.set_local_description(offer.clone()).await?;
-        self.send_signal(peer, &Signal::Offer { sdp: offer.to_string() });
+        self.send_signal(
+            peer,
+            &Signal::Offer {
+                sdp: offer.to_string(),
+            },
+        );
         Ok(())
     }
 
     async fn after_remote_description(&mut self, peer: PeerId, remote_sdp: &str) {
-        let Some(p) = self.peers.get_mut(&peer) else { return };
+        let Some(p) = self.peers.get_mut(&peer) else {
+            return;
+        };
         p.remote_described = true;
         p.remote_fingerprint = fingerprint_from_sdp(remote_sdp);
         let pending = std::mem::take(&mut p.pending_ice);
@@ -461,7 +565,9 @@ impl Actor {
     }
 
     fn open_connection(&mut self, peer: PeerId) -> anyhow::Result<()> {
-        let pc = self.factory.create_peer_connection(self.rtc_config.clone())?;
+        let pc = self
+            .factory
+            .create_peer_connection(self.rtc_config.clone())?;
 
         let tx = self.internal.clone();
         pc.on_ice_candidate(Some(Box::new(move |c: IceCandidate| {
@@ -485,12 +591,21 @@ impl Actor {
                 .chain(ev.receiver.stream_ids())
                 .find_map(|id| VideoKind::from_stream_id(&id));
             tracing::debug!(peer, ?kind, mid = ?ev.transceiver.mid(), "remote track");
-            let _ = tx.send(Internal::Track { peer, kind, track: ev.track });
+            let _ = tx.send(Internal::Track {
+                peer,
+                kind,
+                track: ev.track,
+            });
         })));
 
         let dc = pc.create_data_channel(
             "silent",
-            DataChannelInit { negotiated: true, id: 0, ordered: true, ..Default::default() },
+            DataChannelInit {
+                negotiated: true,
+                id: 0,
+                ordered: true,
+                ..Default::default()
+            },
         )?;
         let tx = self.internal.clone();
         dc.on_state_change(Some(Box::new(move |state| {
@@ -500,7 +615,10 @@ impl Actor {
         })));
         let tx = self.internal.clone();
         dc.on_message(Some(Box::new(move |buf: DataBuffer| {
-            let _ = tx.send(Internal::DcMessage { peer, data: buf.data.to_vec() });
+            let _ = tx.send(Internal::DcMessage {
+                peer,
+                data: buf.data.to_vec(),
+            });
         })));
 
         if self.me > peer {
@@ -521,7 +639,10 @@ impl Actor {
             stream_ids: vec![stream.to_string()],
             send_encodings: Vec::new(),
         };
-        pc.add_transceiver(MediaStreamTrack::Audio(self.media.audio.clone()), init(STREAM_AUDIO))?;
+        pc.add_transceiver(
+            MediaStreamTrack::Audio(self.media.audio.clone()),
+            init(STREAM_AUDIO),
+        )?;
         let mut senders = Vec::new();
         for kind in [VideoKind::Camera, VideoKind::Screen] {
             let video = self.media.video(kind);
@@ -537,7 +658,10 @@ impl Actor {
     /// attaches them to the offer's transceivers (in m-line order) instead of
     /// creating new ones.
     fn add_local_tracks(&mut self, peer: PeerId, pc: &PeerConnection) -> anyhow::Result<()> {
-        pc.add_track(MediaStreamTrack::Audio(self.media.audio.clone()), &[STREAM_AUDIO])?;
+        pc.add_track(
+            MediaStreamTrack::Audio(self.media.audio.clone()),
+            &[STREAM_AUDIO],
+        )?;
         let mut senders = Vec::new();
         for kind in [VideoKind::Camera, VideoKind::Screen] {
             let video = self.media.video(kind);
@@ -577,7 +701,9 @@ impl Actor {
     }
 
     fn drop_peer(&mut self, peer: PeerId) {
-        let Some(p) = self.peers.remove(&peer) else { return };
+        let Some(p) = self.peers.remove(&peer) else {
+            return;
+        };
         if let Some(dc) = &p.dc {
             dc.close();
         }
@@ -591,8 +717,20 @@ impl Actor {
 
     async fn on_internal(&mut self, ev: Internal) {
         match ev {
-            Internal::Ice { peer, mid, mline, candidate } => {
-                self.send_signal(peer, &Signal::Ice { mid, mline, candidate });
+            Internal::Ice {
+                peer,
+                mid,
+                mline,
+                candidate,
+            } => {
+                self.send_signal(
+                    peer,
+                    &Signal::Ice {
+                        mid,
+                        mline,
+                        candidate,
+                    },
+                );
             }
             Internal::PcState { peer, state } => self.on_pc_state(peer, state),
             Internal::Track { peer, kind, track } => {
@@ -622,20 +760,24 @@ impl Actor {
 
     fn on_pc_state(&mut self, peer: PeerId, state: PeerConnectionState) {
         tracing::debug!(me = self.me, peer, ?state, "connection state");
-        let Some(p) = self.peers.get_mut(&peer) else { return };
+        let Some(p) = self.peers.get_mut(&peer) else {
+            return;
+        };
         match state {
             PeerConnectionState::Connected if !p.announced_connected => {
                 p.announced_connected = true;
-                let local = p
-                    .pc
-                    .as_ref()
-                    .and_then(|pc| pc.current_local_description())
-                    .and_then(|d| fingerprint_from_sdp(&d.to_string()));
+                let local =
+                    p.pc.as_ref()
+                        .and_then(|pc| pc.current_local_description())
+                        .and_then(|d| fingerprint_from_sdp(&d.to_string()));
                 let words = match (&p.keys, local, &p.remote_fingerprint) {
                     (Some(keys), Some(local), Some(remote)) => keys.safety_words(&local, remote),
                     _ => ["?", "?", "?", "?"],
                 };
-                self.emit(RoomEvent::PeerConnected { peer, safety_words: words });
+                self.emit(RoomEvent::PeerConnected {
+                    peer,
+                    safety_words: words,
+                });
             }
             PeerConnectionState::Failed => {
                 p.announced_connected = false;
@@ -646,7 +788,9 @@ impl Actor {
     }
 
     fn send_channel(&self, peer: PeerId, msg: &ChannelMsg) {
-        let Some(dc) = self.peers.get(&peer).and_then(|p| p.dc.as_ref()) else { return };
+        let Some(dc) = self.peers.get(&peer).and_then(|p| p.dc.as_ref()) else {
+            return;
+        };
         if dc.state() != DataChannelState::Open {
             return;
         }
@@ -675,7 +819,11 @@ impl Actor {
         match serde_json::from_slice::<ChannelMsg>(data) {
             Ok(ChannelMsg::Chat { text, sent_at_ms }) => {
                 let text: String = text.chars().take(MAX_CHAT_CHARS).collect();
-                self.emit(RoomEvent::Chat { from: peer, text, sent_at_ms });
+                self.emit(RoomEvent::Chat {
+                    from: peer,
+                    text,
+                    sent_at_ms,
+                });
             }
             Ok(ChannelMsg::Media(state)) => self.emit(RoomEvent::PeerMedia { peer, state }),
             Err(_) => tracing::debug!(peer, "ignoring undecodable channel message"),
@@ -687,7 +835,10 @@ impl Actor {
             Command::Chat(text) => {
                 let text: String = text.chars().take(MAX_CHAT_CHARS).collect();
                 if !text.trim().is_empty() {
-                    self.broadcast(&ChannelMsg::Chat { text, sent_at_ms: now_ms() });
+                    self.broadcast(&ChannelMsg::Chat {
+                        text,
+                        sent_at_ms: now_ms(),
+                    });
                 }
             }
             Command::Mic(on) => {
@@ -696,13 +847,23 @@ impl Actor {
                 self.broadcast_media();
             }
             Command::Camera(target) => {
+                let internal = self.internal.clone();
                 let video = self.media.video(VideoKind::Camera);
                 video.producer = None;
-                if let Some(CameraTarget::TestPattern) = target {
+                if let Some(target) = target.clone() {
                     let (source, encoding) = (video.source.clone(), video.encoding);
-                    video.producer = Some(Producer::spawn("silent-camera", move |stop| {
-                        test_pattern(source, encoding, stop)
-                    }));
+                    video.producer =
+                        Some(Producer::spawn("silent-camera", move |stop| match target {
+                            CameraTarget::TestPattern => test_pattern(source, encoding, stop),
+                            CameraTarget::Device(index) => {
+                                camera::run(source, encoding, index, stop, move |message| {
+                                    let _ = internal.send(Internal::CaptureFailed {
+                                        kind: VideoKind::Camera,
+                                        message,
+                                    });
+                                })
+                            }
+                        }));
                 }
                 self.media_state.camera = target.is_some();
                 self.sync_senders(None);
@@ -719,8 +880,10 @@ impl Actor {
                             test_pattern(source, encoding, stop)
                         } else {
                             capture::run(source, encoding, target, stop, move |message| {
-                                let _ = internal
-                                    .send(Internal::CaptureFailed { kind: VideoKind::Screen, message });
+                                let _ = internal.send(Internal::CaptureFailed {
+                                    kind: VideoKind::Screen,
+                                    message,
+                                });
                             })
                         }
                     }));

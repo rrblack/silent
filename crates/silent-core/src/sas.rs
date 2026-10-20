@@ -13,7 +13,11 @@ use crate::words::WORDS;
 pub(crate) fn safety_words(sas_key: &[u8; 32], mine: &str, theirs: &str) -> [&'static str; 4] {
     let mine = normalize(mine);
     let theirs = normalize(theirs);
-    let (lo, hi) = if mine <= theirs { (mine, theirs) } else { (theirs, mine) };
+    let (lo, hi) = if mine <= theirs {
+        (mine, theirs)
+    } else {
+        (theirs, mine)
+    };
     let mut info = b"silent/v1/sas".to_vec();
     info.extend_from_slice(lo.as_bytes());
     info.push(0);
@@ -36,7 +40,11 @@ pub fn fingerprint_from_sdp(sdp: &str) -> Option<String> {
     sdp.lines().find_map(|line| {
         let rest = line.trim().strip_prefix("a=fingerprint:")?;
         let (algo, value) = rest.split_once(' ')?;
-        Some(format!("{} {}", algo.to_ascii_lowercase(), value.trim().to_ascii_uppercase()))
+        Some(format!(
+            "{} {}",
+            algo.to_ascii_lowercase(),
+            value.trim().to_ascii_uppercase()
+        ))
     })
 }
 
@@ -47,7 +55,10 @@ mod tests {
     #[test]
     fn order_independent() {
         let key = [3u8; 32];
-        assert_eq!(safety_words(&key, "aa", "BB"), safety_words(&key, "bb", "AA"));
+        assert_eq!(
+            safety_words(&key, "aa", "BB"),
+            safety_words(&key, "bb", "AA")
+        );
     }
 
     #[test]
@@ -60,8 +71,12 @@ mod tests {
 
     #[test]
     fn parses_fingerprint() {
-        let sdp = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\na=fingerprint:SHA-256 ab:cd:ef\r\nm=audio 9\r\n";
-        assert_eq!(fingerprint_from_sdp(sdp).as_deref(), Some("sha-256 AB:CD:EF"));
+        let sdp =
+            "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\na=fingerprint:SHA-256 ab:cd:ef\r\nm=audio 9\r\n";
+        assert_eq!(
+            fingerprint_from_sdp(sdp).as_deref(),
+            Some("sha-256 AB:CD:EF")
+        );
         assert_eq!(fingerprint_from_sdp("v=0\r\n"), None);
     }
 }

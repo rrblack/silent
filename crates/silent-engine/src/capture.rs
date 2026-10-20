@@ -40,7 +40,11 @@ pub fn list_sources(kind: SourceKind) -> Vec<CaptureChoice> {
     capturer
         .get_source_list()
         .into_iter()
-        .map(|s| CaptureChoice { id: s.id(), title: s.title(), kind })
+        .map(|s| CaptureChoice {
+            id: s.id(),
+            title: s.title(),
+            kind,
+        })
         .collect()
 }
 
@@ -77,7 +81,10 @@ pub(crate) fn run(
 
     let chosen = match wanted {
         Some(id) => {
-            let found = capturer.get_source_list().into_iter().find(|s| s.id() == id);
+            let found = capturer
+                .get_source_list()
+                .into_iter()
+                .find(|s| s.id() == id);
             if found.is_none() {
                 on_fatal("that screen or window is no longer available".into());
                 return;
@@ -91,17 +98,20 @@ pub(crate) fn run(
     let fatal = Arc::new(AtomicBool::new(false));
     let fatal_flag = fatal.clone();
     let mut reported = false;
-    capturer.start_capture(chosen, move |result: Result<DesktopFrame, CaptureError>| match result {
-        Ok(frame) => {
-            if let Some(buffer) = to_i420(&frame, &encoding) {
-                push_i420(&source, buffer);
+    capturer.start_capture(
+        chosen,
+        move |result: Result<DesktopFrame, CaptureError>| match result {
+            Ok(frame) => {
+                if let Some(buffer) = to_i420(&frame, &encoding) {
+                    push_i420(&source, buffer);
+                }
             }
-        }
-        Err(CaptureError::Temporary) => {}
-        Err(CaptureError::Permanent) => {
-            fatal_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-    });
+            Err(CaptureError::Temporary) => {}
+            Err(CaptureError::Permanent) => {
+                fatal_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        },
+    );
 
     paced(encoding.fps, &stop, || {
         if fatal.load(std::sync::atomic::Ordering::Relaxed) {
@@ -136,7 +146,18 @@ fn to_i420(frame: &DesktopFrame, encoding: &Encoding) -> Option<I420Buffer> {
     let mut full = I420Buffer::new(w, h);
     let (sy, su, sv) = full.strides();
     let (y, u, v) = full.data_mut();
-    yuv_helper::argb_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, w as i32, h as i32);
+    yuv_helper::argb_to_i420(
+        frame.data(),
+        frame.stride(),
+        y,
+        sy,
+        u,
+        su,
+        v,
+        sv,
+        w as i32,
+        h as i32,
+    );
 
     let (tw, th) = fit(w, h, encoding.max_width, encoding.max_height);
     if (tw, th) == (w, h) {

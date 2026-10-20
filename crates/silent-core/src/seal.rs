@@ -44,7 +44,11 @@ pub struct Sealer {
 
 impl Sealer {
     pub(crate) fn new(key: &[u8; 32], from: PeerId, to: PeerId) -> Self {
-        Self { cipher: ChaCha20Poly1305::new(Key::from_slice(key)), aad: aad(from, to), counter: 0 }
+        Self {
+            cipher: ChaCha20Poly1305::new(Key::from_slice(key)),
+            aad: aad(from, to),
+            counter: 0,
+        }
     }
 
     pub fn seal(&mut self, plaintext: &[u8]) -> Vec<u8> {
@@ -52,7 +56,13 @@ impl Sealer {
         self.counter = self.counter.checked_add(1).expect("2^64 messages");
         let ciphertext = self
             .cipher
-            .encrypt(&nonce(counter), Payload { msg: plaintext, aad: &self.aad })
+            .encrypt(
+                &nonce(counter),
+                Payload {
+                    msg: plaintext,
+                    aad: &self.aad,
+                },
+            )
             .expect("chacha20poly1305 encryption is infallible for in-memory buffers");
         let mut out = Vec::with_capacity(COUNTER_LEN + ciphertext.len());
         out.extend_from_slice(&counter.to_be_bytes());
@@ -69,7 +79,11 @@ pub struct Opener {
 
 impl Opener {
     pub(crate) fn new(key: &[u8; 32], from: PeerId, to: PeerId) -> Self {
-        Self { cipher: ChaCha20Poly1305::new(Key::from_slice(key)), aad: aad(from, to), expected: 0 }
+        Self {
+            cipher: ChaCha20Poly1305::new(Key::from_slice(key)),
+            aad: aad(from, to),
+            expected: 0,
+        }
     }
 
     pub fn open(&mut self, sealed: &[u8]) -> Result<Vec<u8>, SealError> {
@@ -79,11 +93,20 @@ impl Opener {
         let (counter, ciphertext) = sealed.split_at(COUNTER_LEN);
         let counter = u64::from_be_bytes(counter.try_into().expect("split at 8"));
         if counter != self.expected {
-            return Err(SealError::OutOfOrder { expected: self.expected, got: counter });
+            return Err(SealError::OutOfOrder {
+                expected: self.expected,
+                got: counter,
+            });
         }
         let plaintext = self
             .cipher
-            .decrypt(&nonce(counter), Payload { msg: ciphertext, aad: &self.aad })
+            .decrypt(
+                &nonce(counter),
+                Payload {
+                    msg: ciphertext,
+                    aad: &self.aad,
+                },
+            )
             .map_err(|_| SealError::Forged)?;
         self.expected += 1;
         Ok(plaintext)
@@ -112,9 +135,21 @@ mod tests {
         let (mut s, mut o) = pair();
         let m0 = s.seal(b"a");
         let m1 = s.seal(b"b");
-        assert_eq!(o.open(&m1), Err(SealError::OutOfOrder { expected: 0, got: 1 }));
+        assert_eq!(
+            o.open(&m1),
+            Err(SealError::OutOfOrder {
+                expected: 0,
+                got: 1
+            })
+        );
         o.open(&m0).unwrap();
-        assert_eq!(o.open(&m0), Err(SealError::OutOfOrder { expected: 1, got: 0 }));
+        assert_eq!(
+            o.open(&m0),
+            Err(SealError::OutOfOrder {
+                expected: 1,
+                got: 0
+            })
+        );
         o.open(&m1).unwrap();
     }
 

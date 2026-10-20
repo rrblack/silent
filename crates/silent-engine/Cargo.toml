@@ -17,6 +17,7 @@ futures-util.workspace = true
 tracing.workspace = true
 libwebrtc = "=0.3.52"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+nokhwa = { version = "0.10.11", features = ["input-native"] }
 
 [dev-dependencies]
 silent-relay.workspace = true

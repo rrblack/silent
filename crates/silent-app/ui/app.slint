@@ -1,0 +1,553 @@
+import { Button, LineEdit, ComboBox, CheckBox, ListView, ScrollView } from "std-widgets.slint";
+
+export struct Tile {
+    key: string,
+    name: string,
+    initial: string,
+    kind: string,
+    frame: image,
+    has-video: bool,
+    mic: bool,
+    status: string,
+    is-me: bool,
+}
+
+export struct ChatLine {
+    who: string,
+    text: string,
+    time: string,
+    mine: bool,
+    system: bool,
+}
+
+export struct SourceItem {
+    id: string,
+    title: string,
+}
+
+export struct Verification {
+    name: string,
+    words: string,
+}
+
+export global Palette {
+    out property <color> bg: #0f1014;
+    out property <color> panel: #16181e;
+    out property <color> card: #1e2128;
+    out property <color> card-hover: #262a33;
+    out property <color> border: #2b2f39;
+    out property <color> text: #e8e9ee;
+    out property <color> subtext: #9ba1ad;
+    out property <color> accent: #8b7cf6;
+    out property <color> accent-dim: #3a3466;
+    out property <color> ok: #3fb67a;
+    out property <color> danger: #e5484d;
+}
+
+component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 40px;
+    min-width: 96px;
+    border-radius: 20px;
+    background: !enabled ? Palette.card : danger ? Palette.danger : active ? Palette.accent : touch.has-hover ? Palette.card-hover : Palette.card;
+    border-width: 1px;
+    border-color: active || danger ? transparent : Palette.border;
+    opacity: enabled ? 1.0 : 0.5;
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        Text {
+            text: root.label;
+            color: Palette.text;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component VideoTile inherits Rectangle {
+    in property <Tile> tile;
+    border-radius: 12px;
+    clip: true;
+    background: Palette.card;
+    border-width: 1px;
+    border-color: Palette.border;
+
+    if tile.has-video: Image {
+        width: parent.width;
+        height: parent.height;
+        source: tile.frame;
+        image-fit: tile.kind == "screen" ? contain : cover;
+    }
+
+    if !tile.has-video: VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 72px;
+                height: 72px;
+                border-radius: 36px;
+                background: Palette.accent-dim;
+                Text {
+                    text: tile.initial;
+                    color: Palette.text;
+                    font-size: 28px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        if tile.status != "": Text {
+            text: tile.status;
+            color: Palette.subtext;
+            font-size: 13px;
+            horizontal-alignment: center;
+        }
+    }
+
+    Rectangle {
+        x: 10px;
+        y: parent.height - self.height - 10px;
+        height: 26px;
+        width: label.preferred-width + 20px;
+        border-radius: 13px;
+        background: #000000b0;
+        label := Text {
+            text: (tile.mic || tile.kind == "screen" ? "" : "muted  ·  ") + tile.name + (tile.kind == "screen" ? "'s screen" : "") + (tile.is-me ? " (you)" : "");
+            color: Palette.text;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component Home inherits Rectangle {
+    in-out property <string> name;
+    in-out property <string> join-code;
+    in property <string> error;
+    in property <bool> busy;
+    in-out property <int> camera-quality;
+    in-out property <int> screen-quality;
+    in-out property <bool> relay-only;
+    in-out property <string> relay-url;
+    property <bool> show-settings: false;
+    callback create-room;
+    callback join-room;
+
+    background: Palette.bg;
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                width: 420px;
+                spacing: 16px;
+
+                Text {
+                    text: "Silent";
+                    color: Palette.text;
+                    font-size: 44px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Encrypted calls, screen sharing and chat for up to four friends.\nNo accounts. Nothing stored.";
+                    color: Palette.subtext;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                Rectangle { height: 8px; }
+
+                Text { text: "Your name"; color: Palette.subtext; font-size: 12px; }
+                LineEdit {
+                    text <=> root.name;
+                    placeholder-text: "What friends will see";
+                }
+
+                PillButton {
+                    label: root.busy ? "Connecting…" : "Start a room";
+                    active: true;
+                    enabled: !root.busy;
+                    clicked => { root.create-room(); }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle { height: 1px; background: Palette.border; y: 8px; }
+                    Text { text: "or join a friend"; color: Palette.subtext; font-size: 12px; }
+                    Rectangle { height: 1px; background: Palette.border; y: 8px; }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    LineEdit {
+                        text <=> root.join-code;
+                        placeholder-text: "1234-word-word-word";
+                        accepted => { root.join-room(); }
+                    }
+                    PillButton {
+                        label: "Join";
+                        enabled: !root.busy && root.join-code != "";
+                        clicked => { root.join-room(); }
+                    }
+                }
+
+                if root.error != "": Text {
+                    text: root.error;
+                    color: Palette.danger;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: root.show-settings ? "Hide settings" : "Settings";
+                    color: Palette.accent;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.show-settings = !root.show-settings; }
+                    }
+                }
+
+                if root.show-settings: VerticalLayout {
+                    spacing: 10px;
+                    Text { text: "Camera quality"; color: Palette.subtext; font-size: 12px; }
+                    ComboBox {
+                        model: ["Standard (720p, 30 fps)", "High (1080p, 60 fps)"];
+                        current-index <=> root.camera-quality;
+                    }
+                    Text { text: "Screen share"; color: Palette.subtext; font-size: 12px; }
+                    ComboBox {
+                        model: ["Motion: games and video (1080p, 60 fps)", "Detail: code and documents (1440p, 30 fps)"];
+                        current-index <=> root.screen-quality;
+                    }
+                    CheckBox {
+                        text: "Hide my IP from friends (relay all media)";
+                        checked <=> root.relay-only;
+                    }
+                    Text { text: "Relay server"; color: Palette.subtext; font-size: 12px; }
+                    LineEdit { text <=> root.relay-url; }
+                }
+            }
+        }
+    }
+}
+
+component Room inherits Rectangle {
+    in property <string> code;
+    in property <[Tile]> tiles;
+    in property <[ChatLine]> chat;
+    in property <[Verification]> verifications;
+    in property <bool> mic-on;
+    in property <bool> camera-on;
+    in property <bool> screen-on;
+    in property <bool> copied;
+    in property <string> notice;
+    in-out property <string> draft;
+    callback toggle-mic;
+    callback toggle-camera;
+    callback toggle-screen;
+    callback leave;
+    callback copy-code;
+    callback send-chat;
+    callback show-verify;
+
+    background: Palette.bg;
+
+    property <int> count: tiles.length;
+    property <int> cols: count <= 1 ? 1 : count <= 4 ? 2 : 3;
+    property <int> rows: Math.ceil(count / cols);
+    property <length> gap: 12px;
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 56px;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 12px;
+            Text {
+                text: "Silent";
+                color: Palette.text;
+                font-size: 18px;
+                font-weight: 800;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                height: 34px;
+                y: 11px;
+                border-radius: 17px;
+                background: Palette.card;
+                width: code-row.preferred-width + 24px;
+                code-row := HorizontalLayout {
+                    padding-left: 12px;
+                    spacing: 8px;
+                    Text { text: "Room code"; color: Palette.subtext; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.code; color: Palette.text; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+                    Text {
+                        text: root.copied ? "Copied" : "Copy";
+                        color: Palette.accent;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        TouchArea { mouse-cursor: pointer; clicked => { root.copy-code(); } }
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.notice != "": Text {
+                text: root.notice;
+                color: Palette.subtext;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            PillButton {
+                y: 8px;
+                label: "Verify";
+                enabled: root.verifications.length > 0;
+                clicked => { root.show-verify(); }
+            }
+        }
+
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 12px;
+
+            stage := Rectangle {
+                horizontal-stretch: 1;
+                property <length> cell-w: (self.width - (root.cols - 1) * root.gap) / root.cols;
+                property <length> cell-h: (self.height - (root.rows - 1) * root.gap) / max(root.rows, 1);
+                property <length> tile-w: min(self.cell-w, self.cell-h * 16 / 9);
+                property <length> tile-h: self.tile-w * 9 / 16;
+                property <length> x0: (self.width - root.cols * self.tile-w - (root.cols - 1) * root.gap) / 2;
+                property <length> y0: (self.height - root.rows * self.tile-h - (root.rows - 1) * root.gap) / 2;
+                for t[i] in root.tiles: VideoTile {
+                    tile: t;
+                    x: stage.x0 + Math.mod(i, root.cols) * (stage.tile-w + root.gap);
+                    y: stage.y0 + Math.floor(i / root.cols) * (stage.tile-h + root.gap);
+                    width: stage.tile-w;
+                    height: stage.tile-h;
+                }
+            }
+
+            Rectangle {
+                width: 300px;
+                border-radius: 12px;
+                background: Palette.panel;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text { text: "Chat"; color: Palette.text; font-size: 14px; font-weight: 700; }
+                    Text {
+                        text: "End-to-end encrypted. Gone when you leave.";
+                        color: Palette.subtext;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for line in root.chat: VerticalLayout {
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            spacing: 2px;
+                            if !line.system: HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: line.who; color: line.mine ? Palette.accent : Palette.text; font-size: 12px; font-weight: 700; }
+                                Text { text: line.time; color: Palette.subtext; font-size: 11px; }
+                            }
+                            Text {
+                                text: line.text;
+                                color: line.system ? Palette.subtext : Palette.text;
+                                font-size: line.system ? 12px : 13px;
+                                font-italic: line.system;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    LineEdit {
+                        text <=> root.draft;
+                        placeholder-text: "Message";
+                        accepted => { root.send-chat(); }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 72px;
+            alignment: center;
+            spacing: 12px;
+            padding-bottom: 16px;
+            PillButton { label: root.mic-on ? "Mute" : "Unmute"; active: !root.mic-on; clicked => { root.toggle-mic(); } }
+            PillButton { label: root.camera-on ? "Stop camera" : "Camera"; active: root.camera-on; clicked => { root.toggle-camera(); } }
+            PillButton { label: root.screen-on ? "Stop sharing" : "Share screen"; active: root.screen-on; clicked => { root.toggle-screen(); } }
+            PillButton { label: "Leave"; danger: true; clicked => { root.leave(); } }
+        }
+    }
+}
+
+component Sheet inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    callback close;
+    background: #000000a0;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        width: min(460px, root.width - 40px);
+        height: min(content.preferred-height, root.height - 80px);
+        border-radius: 14px;
+        background: Palette.panel;
+        border-width: 1px;
+        border-color: Palette.border;
+        TouchArea {}
+        content := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            Text { text: root.title; color: Palette.text; font-size: 18px; font-weight: 700; }
+            if root.subtitle != "": Text { text: root.subtitle; color: Palette.subtext; font-size: 13px; wrap: word-wrap; }
+            @children
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Silent";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 900px;
+    min-height: 600px;
+    background: Palette.bg;
+    default-font-size: 14px;
+
+    in-out property <string> screen: "home";
+
+    in-out property <string> name;
+    in-out property <string> join-code;
+    in property <string> home-error;
+    in property <bool> busy;
+    in-out property <int> camera-quality: 0;
+    in-out property <int> screen-quality: 0;
+    in-out property <bool> relay-only: false;
+    in-out property <string> relay-url;
+
+    in property <string> code;
+    in property <[Tile]> tiles;
+    in property <[ChatLine]> chat;
+    in property <[Verification]> verifications;
+    in property <bool> mic-on: true;
+    in property <bool> camera-on;
+    in property <bool> screen-on;
+    in property <bool> copied;
+    in property <string> notice;
+    in-out property <string> draft;
+
+    in property <[SourceItem]> sources;
+    in-out property <bool> picker-open: false;
+    in-out property <bool> verify-open: false;
+
+    callback create-room;
+    callback join-room;
+    callback toggle-mic;
+    callback toggle-camera;
+    callback toggle-screen;
+    callback pick-source(string);
+    callback leave;
+    callback copy-code;
+    callback send-chat;
+
+    if root.screen == "home": Home {
+        name <=> root.name;
+        join-code <=> root.join-code;
+        error: root.home-error;
+        busy: root.busy;
+        camera-quality <=> root.camera-quality;
+        screen-quality <=> root.screen-quality;
+        relay-only <=> root.relay-only;
+        relay-url <=> root.relay-url;
+        create-room => { root.create-room(); }
+        join-room => { root.join-room(); }
+    }
+
+    if root.screen == "room": Room {
+        code: root.code;
+        tiles: root.tiles;
+        chat: root.chat;
+        verifications: root.verifications;
+        mic-on: root.mic-on;
+        camera-on: root.camera-on;
+        screen-on: root.screen-on;
+        copied: root.copied;
+        notice: root.notice;
+        draft <=> root.draft;
+        toggle-mic => { root.toggle-mic(); }
+        toggle-camera => { root.toggle-camera(); }
+        toggle-screen => { root.toggle-screen(); }
+        leave => { root.leave(); }
+        copy-code => { root.copy-code(); }
+        send-chat => { root.send-chat(); }
+        show-verify => { root.verify-open = true; }
+    }
+
+    if root.picker-open: Sheet {
+        title: "Share your screen";
+        subtitle: "Friends see it at up to 60 fps. Only people in this room can watch.";
+        close => { root.picker-open = false; }
+        ScrollView {
+            min-height: min(root.sources.length * 46px, 320px);
+            VerticalLayout {
+                spacing: 6px;
+                for s in root.sources: Rectangle {
+                    height: 40px;
+                    border-radius: 8px;
+                    background: ta.has-hover ? Palette.card-hover : Palette.card;
+                    Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        text: s.title;
+                        color: Palette.text;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        height: parent.height;
+                    }
+                    ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.picker-open = false;
+                            root.pick-source(s.id);
+                        }
+                    }
+                }
+            }
+        }
+        PillButton { label: "Cancel"; clicked => { root.picker-open = false; } }
+    }
+
+    if root.verify-open: Sheet {
+        title: "Check for eavesdroppers";
+        subtitle: "Read your words aloud with each friend. If they match, your connection is end to end and nobody is listening in. If they differ, leave the room.";
+        close => { root.verify-open = false; }
+        for v in root.verifications: HorizontalLayout {
+            spacing: 12px;
+            Text { text: v.name; color: Palette.subtext; width: 120px; overflow: elide; vertical-alignment: center; }
+            Text { text: v.words; color: Palette.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+        }
+        PillButton { label: "Done"; clicked => { root.verify-open = false; } }
+    }
+}

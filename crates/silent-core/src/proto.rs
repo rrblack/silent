@@ -58,10 +58,19 @@ pub enum ServerMsg {
         #[serde(default)]
         ice: IceConfig,
     },
-    Joined { peer: PeerId },
-    Left { peer: PeerId },
-    Relay { from: PeerId, data: String },
-    Error { code: RelayErrorCode },
+    Joined {
+        peer: PeerId,
+    },
+    Left {
+        peer: PeerId,
+    },
+    Relay {
+        from: PeerId,
+        data: String,
+    },
+    Error {
+        code: RelayErrorCode,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,10 +128,21 @@ impl PeerFrame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Signal {
-    Hello { version: u32, name: String },
-    Offer { sdp: String },
-    Answer { sdp: String },
-    Ice { mid: String, mline: i32, candidate: String },
+    Hello {
+        version: u32,
+        name: String,
+    },
+    Offer {
+        sdp: String,
+    },
+    Answer {
+        sdp: String,
+    },
+    Ice {
+        mid: String,
+        mline: i32,
+        candidate: String,
+    },
     Bye,
 }
 
@@ -173,8 +193,11 @@ impl Default for IceConfig {
 
 /// Trims and caps a user-supplied display name.
 pub fn clean_name(name: &str) -> String {
-    let cleaned: String =
-        name.chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect();
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NAME_CHARS)
+        .collect();
     let cleaned = cleaned.trim();
     if cleaned.is_empty() {
         "Friend".to_string()
@@ -190,16 +213,38 @@ mod tests {
     #[test]
     fn server_msg_json_shape() {
         let m: ServerMsg = serde_json::from_str(r#"{"t":"welcome","you":2,"peers":[1]}"#).unwrap();
-        assert_eq!(m, ServerMsg::Welcome { you: 2, peers: vec![1], ice: IceConfig::default() });
-        let e = ServerMsg::Error { code: RelayErrorCode::RoomFull };
-        assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"t":"error","code":"room_full"}"#);
+        assert_eq!(
+            m,
+            ServerMsg::Welcome {
+                you: 2,
+                peers: vec![1],
+                ice: IceConfig::default()
+            }
+        );
+        let e = ServerMsg::Error {
+            code: RelayErrorCode::RoomFull,
+        };
+        assert_eq!(
+            serde_json::to_string(&e).unwrap(),
+            r#"{"t":"error","code":"room_full"}"#
+        );
         let c: ClientMsg = serde_json::from_str(r#"{"t":"relay","to":3,"data":"x"}"#).unwrap();
-        assert_eq!(c, ClientMsg::Relay { to: 3, data: "x".into() });
+        assert_eq!(
+            c,
+            ClientMsg::Relay {
+                to: 3,
+                data: "x".into()
+            }
+        );
     }
 
     #[test]
     fn peer_frame_roundtrip() {
-        for f in [PeerFrame::Pake(vec![1, 2, 3]), PeerFrame::Sealed(vec![]), PeerFrame::Sealed(vec![9; 100])] {
+        for f in [
+            PeerFrame::Pake(vec![1, 2, 3]),
+            PeerFrame::Sealed(vec![]),
+            PeerFrame::Sealed(vec![9; 100]),
+        ] {
             assert_eq!(PeerFrame::decode(&f.encode()).unwrap(), f);
         }
         assert!(PeerFrame::decode("x:AAAA").is_err());
