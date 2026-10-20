@@ -1,0 +1,20 @@
+name = "silent-signal"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# No request logs, no traces: the relay should leave nothing behind.
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# Optional, for TURN relay credentials (Cloudflare Realtime TURN):
+#   wrangler secret put TURN_KEY_ID
+#   wrangler secret put TURN_KEY_API_TOKEN
+# Without them, peers only get STUN and some networks will fail to connect.

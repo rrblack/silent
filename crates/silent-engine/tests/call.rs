@@ -16,11 +16,16 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 const STEP: Duration = Duration::from_secs(20);
 
+/// In-process relay, or `SILENT_TEST_RELAY` (e.g. `wrangler dev`) to run the
+/// same calls through the Cloudflare Worker.
 async fn relay() -> String {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".into()))
         .with_test_writer()
         .try_init();
+    if let Ok(base) = std::env::var("SILENT_TEST_RELAY") {
+        return base;
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let config = silent_relay::RelayConfig { ice: IceConfig { ice_servers: vec![] } };
