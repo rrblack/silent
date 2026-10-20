@@ -64,7 +64,9 @@ pub(crate) fn run(
         ScreenTarget::Screen(id) => (DesktopCaptureSourceType::Screen, Some(id)),
         ScreenTarget::Window(id) => (DesktopCaptureSourceType::Window, Some(id)),
         ScreenTarget::SystemPicker => (system_picker_type(), None),
-        ScreenTarget::TestPattern => unreachable!("handled by media::test_pattern"),
+        ScreenTarget::TestPattern | ScreenTarget::External => {
+            unreachable!("handled in Room without a capturer")
+        }
     };
 
     let mut options = DesktopCapturerOptions::new(source_type);

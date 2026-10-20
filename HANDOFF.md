@@ -112,6 +112,42 @@ SILENT_RELAY_URL=https://silent-signal.<account>.workers.dev cargo build --relea
 
 The TURN endpoint in `signal/src/index.ts` is `POST https://rtc.live.cloudflare.com/v1/turn/keys/{id}/credentials/generate-ice-servers`, written from memory of Cloudflare's docs. Check it against current docs when enabling TURN. The parser accepts both the array and the object response shape.
 
+## Android
+
+**What exists:**
+- The engine runs unchanged on Android: the same Rust core, PAKE and WebRTC mesh as desktop. The app captures and pushes frames itself, so desktop capture (nokhwa, DesktopCapturer) is compiled out.
+- The bridge is `crates/silent-ffi` (UniFFI) plus one JNI function, `SilentNative.init(context)`, which hands libwebrtc the Java VM and app context.
+- The app is in `android/` and is written in Kotlin with Jetpack Compose:
+  - camera through CameraX (`CameraFeed.kt`)
+  - screen sharing through MediaProjection in a foreground service (`ScreenShareService.kt`)
+  - a microphone foreground service and audio routing (`CallService.kt`)
+- Remote video arrives as upright RGBA frames, capped at 960 px on the long edge (camera) and 1920 px (screen), at 30 fps. Frames are copied into a ring of reused bitmaps.
+- Phone camera frames carry a rotation flag. `silent-engine/src/render.rs` rotates them for display on every platform, desktop included.
+
+**What was verified (in the container, no device):**
+- `silent-ffi/tests/ffi.rs` runs the exact API Kotlin uses (create, join, chat, pushed rotated camera frames, stats, leave) end to end on the host.
+- `pushed_frames_arrive_upright` checks that 640x480 frames sent with a 90° rotation arrive as a 480x640 image.
+- The APK builds and contains the engine, JNA and 479 libwebrtc Java classes. The library exports all the UniFFI and `Java_livekit_org_webrtc_*` symbols.
+
+**Not verified: it has never run on a phone.** Things to watch for on the first launch:
+- Crash on start: check `adb logcat -s silent AndroidRuntime`. Most likely a JNI or class-loading problem in `SilentNative.init` or JNA.
+- No audio: libwebrtc's Android audio module runs through its Java classes (`livekit.org.webrtc.audio.*`); check logcat for `WebRtcAudioRecord`.
+- Camera frames rotated wrongly or mirrored.
+- Screen share on Android 14+ needs the consent dialog every time. This is expected.
+
+**Phone test plan:**
+1. On a PC, run `silent-relay` (it listens on the LAN by default now) and note the PC's IP address.
+2. On the phone, install the APK, then set Settings → Relay server to `http://<PC IP>:8787`.
+3. On the PC, run the desktop app with Settings → Relay server set to `http://127.0.0.1:8787`. Start a room there and join it from the phone.
+4. Check the following:
+   - safety words match
+   - chat works both ways
+   - phone camera shows upright on the PC
+   - PC screen share plays on the phone
+   - phone screen share plays on the PC
+   - voice works both ways
+   - Stats shows the encoder in use (on phones it should be a `MediaCodec`/`c2.*` hardware name)
+
 ## libwebrtc binding gotchas found the hard way
 
 The crate is `libwebrtc 0.3.52` (LiveKit, pinned with `=`). These are worth knowing before touching `crates/silent-engine/src/room.rs`:
@@ -124,6 +160,8 @@ The crate is `libwebrtc 0.3.52` (LiveKit, pinned with `=`). These are worth know
 6. **The Linux link needs GLib/GIO** for the Wayland portal (`silent-engine/build.rs`).
 
 ## Next steps, roughly in order
+
+0. **iOS:** reuse `silent-ffi` with Swift bindings (`--language swift`) and a SwiftUI app. Camera through AVFoundation; screen sharing needs a ReplayKit Broadcast Upload Extension (a separate process with a 50 MB memory limit). Needs a Mac for local work, plus an Apple Developer account for TestFlight.
 
 1. **Get it on GitHub.** This session couldn't create the repo (see below). Push, then let CI produce Windows and macOS builds.
 2. **Hardware test pass**, the test plan above.

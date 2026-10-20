@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/silent-core", "crates/silent-relay", "crates/silent-engine", "crates/silent-app"]
+members = [
+    "crates/silent-core",
+    "crates/silent-relay",
+    "crates/silent-engine",
+    "crates/silent-app",
+    "crates/silent-ffi",
+    "crates/uniffi-bindgen",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -29,3 +36,9 @@ url = "2"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Mobile libraries keep their symbol table so uniffi-bindgen can read the
+# interface metadata from them; Gradle strips the copy that ships.
+[profile.mobile]
+inherits = "release"
+strip = "debuginfo"

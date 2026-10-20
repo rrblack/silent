@@ -1,0 +1,6 @@
+[bindings.kotlin]
+package_name = "app.silent.ffi"
+cdylib_name = "silent_ffi"
+
+[bindings.swift]
+module_name = "SilentFFI"

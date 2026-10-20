@@ -1,0 +1,32 @@
+[package]
+name = "silent-ffi"
+description = "Mobile bindings (UniFFI) for the Silent engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "silent_ffi"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+silent-core.workspace = true
+silent-engine.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+uniffi = "=0.29.5"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+android_logger = "0.14"
+log = "0.4"
+tracing = { workspace = true, features = ["log"] }
+
+[build-dependencies]
+webrtc-sys-build = "0.3.19"
+
+[dev-dependencies]
+silent-relay.workspace = true

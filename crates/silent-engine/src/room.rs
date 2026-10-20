@@ -31,11 +31,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::media::{
     apply_encoding, test_pattern, AudioInput, CameraProfile, CameraTarget, LocalMedia, Producer,
-    ScreenProfile, ScreenTarget, VideoKind, STREAM_AUDIO,
+    ScreenProfile, ScreenTarget, VideoInput, VideoKind, STREAM_AUDIO,
 };
 use crate::signaling::{SignalLink, Welcome};
 use crate::stats::{self, PeerStats};
-use crate::{camera, capture};
 
 const START_BITRATE_BPS: u64 = 1_200_000;
 
@@ -145,6 +144,8 @@ pub struct Room {
     events: Option<mpsc::UnboundedReceiver<RoomEvent>>,
     local_camera: RtcVideoTrack,
     local_screen: RtcVideoTrack,
+    camera_input: VideoInput,
+    screen_input: VideoInput,
     platform_audio: bool,
 }
 
@@ -168,6 +169,14 @@ impl Room {
             events: Some(ev_rx),
             local_camera: media.camera.track.clone(),
             local_screen: media.screen.track.clone(),
+            camera_input: VideoInput {
+                source: media.camera.source.clone(),
+                encoding: media.camera.encoding,
+            },
+            screen_input: VideoInput {
+                source: media.screen.source.clone(),
+                encoding: media.screen.encoding,
+            },
             platform_audio: media.has_platform_audio(),
         };
 
@@ -203,6 +212,15 @@ impl Room {
     /// Takes the event stream. Call once.
     pub fn take_events(&mut self) -> mpsc::UnboundedReceiver<RoomEvent> {
         self.events.take().expect("events already taken")
+    }
+
+    /// Where to push frames after `set_camera(Some(CameraTarget::External))`
+    /// or `share_screen(Some(ScreenTarget::External))`.
+    pub fn video_input(&self, kind: VideoKind) -> VideoInput {
+        match kind {
+            VideoKind::Camera => self.camera_input.clone(),
+            VideoKind::Screen => self.screen_input.clone(),
+        }
     }
 
     pub fn local_video(&self, kind: VideoKind) -> RtcVideoTrack {
@@ -890,52 +908,67 @@ impl Actor {
                 self.broadcast_media();
             }
             Command::Camera(target) => {
-                let internal = self.internal.clone();
+                let on_fatal = self.fatal_reporter(VideoKind::Camera);
                 let video = self.media.video(VideoKind::Camera);
                 video.producer = None;
-                if let Some(target) = target.clone() {
-                    let (source, encoding) = (video.source.clone(), video.encoding);
-                    video.producer =
-                        Some(Producer::spawn("silent-camera", move |stop| match target {
-                            CameraTarget::TestPattern => test_pattern(source, encoding, stop),
-                            CameraTarget::Device(index) => {
-                                camera::run(source, encoding, index, stop, move |message| {
-                                    let _ = internal.send(Internal::CaptureFailed {
-                                        kind: VideoKind::Camera,
-                                        message,
-                                    });
-                                })
-                            }
-                        }));
-                }
+                let (source, encoding) = (video.source.clone(), video.encoding);
+                video.producer = match target.clone() {
+                    None | Some(CameraTarget::External) => None,
+                    Some(CameraTarget::TestPattern) => {
+                        Some(Producer::spawn("silent-camera", move |stop| {
+                            test_pattern(source, encoding, stop)
+                        }))
+                    }
+                    #[cfg(desktop)]
+                    Some(CameraTarget::Device(index)) => {
+                        Some(Producer::spawn("silent-camera", move |stop| {
+                            crate::camera::run(source, encoding, index, stop, on_fatal)
+                        }))
+                    }
+                    #[cfg(not(desktop))]
+                    Some(CameraTarget::Device(_)) => {
+                        on_fatal("use CameraTarget::External on this platform".into());
+                        None
+                    }
+                };
                 self.media_state.camera = target.is_some();
                 self.sync_senders(None);
                 self.broadcast_media();
             }
             Command::Screen(target) => {
-                let internal = self.internal.clone();
+                let on_fatal = self.fatal_reporter(VideoKind::Screen);
                 let video = self.media.video(VideoKind::Screen);
                 video.producer = None;
-                if let Some(target) = target.clone() {
-                    let (source, encoding) = (video.source.clone(), video.encoding);
-                    video.producer = Some(Producer::spawn("silent-screen", move |stop| {
-                        if target == ScreenTarget::TestPattern {
+                let (source, encoding) = (video.source.clone(), video.encoding);
+                video.producer = match target.clone() {
+                    None | Some(ScreenTarget::External) => None,
+                    Some(ScreenTarget::TestPattern) => {
+                        Some(Producer::spawn("silent-screen", move |stop| {
                             test_pattern(source, encoding, stop)
-                        } else {
-                            capture::run(source, encoding, target, stop, move |message| {
-                                let _ = internal.send(Internal::CaptureFailed {
-                                    kind: VideoKind::Screen,
-                                    message,
-                                });
-                            })
-                        }
-                    }));
-                }
+                        }))
+                    }
+                    #[cfg(desktop)]
+                    Some(target) => Some(Producer::spawn("silent-screen", move |stop| {
+                        crate::capture::run(source, encoding, target, stop, on_fatal)
+                    })),
+                    #[cfg(not(desktop))]
+                    Some(_) => {
+                        on_fatal("use ScreenTarget::External on this platform".into());
+                        None
+                    }
+                };
                 self.media_state.screen = target.is_some();
                 self.sync_senders(None);
                 self.broadcast_media();
             }
             Command::Leave(_) | Command::Stats(_) => unreachable!("handled in run loop"),
+        }
+    }
+
+    fn fatal_reporter(&self, kind: VideoKind) -> impl Fn(String) + Send + 'static {
+        let internal = self.internal.clone();
+        move |message| {
+            let _ = internal.send(Internal::CaptureFailed { kind, message });
         }
     }
 

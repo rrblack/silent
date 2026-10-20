@@ -16,7 +16,9 @@ tokio-stream.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
 libwebrtc = "=0.3.52"
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+
+[target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 nokhwa = { version = "0.10.11", features = ["input-native"] }
 
 [dev-dependencies]

@@ -1,9 +1,12 @@
 //! Silent's call engine: relay signaling, pairwise PAKE, and a WebRTC mesh of
 //! up to four peers carrying audio, camera, screen share and chat.
 
+#[cfg(desktop)]
 pub mod camera;
+#[cfg(desktop)]
 pub mod capture;
 pub mod media;
+pub mod render;
 mod room;
 mod signaling;
 pub mod stats;
@@ -13,7 +16,9 @@ use silent_core::proto::{Intent, RelayErrorCode};
 use silent_core::InviteCode;
 
 pub use libwebrtc;
-pub use media::{AudioInput, CameraProfile, CameraTarget, ScreenProfile, ScreenTarget, VideoKind};
+pub use media::{
+    AudioInput, CameraProfile, CameraTarget, ScreenProfile, ScreenTarget, VideoInput, VideoKind,
+};
 pub use room::{Room, RoomEvent, Settings};
 pub use signaling::SignalError;
 pub use silent_core::proto::MediaState;

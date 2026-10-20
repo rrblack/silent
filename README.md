@@ -16,6 +16,9 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the protocol and threat model, and 
 | `crates/silent-core` | Invite codes, SPAKE2 pair handshake, sealed envelopes, safety words, wire types. Pure, no I/O. |
 | `crates/silent-engine` | Rooms: relay client, per-peer WebRTC connections, audio/camera/screen tracks, chat, stats. |
 | `crates/silent-app` | The desktop app (`silent` binary), Slint UI in `ui/app.slint`. |
+| `crates/silent-ffi` | UniFFI bindings of the engine for the mobile apps (Kotlin now, Swift later). |
+| `crates/uniffi-bindgen` | Generates those bindings from a built library. |
+| `android/` | Android app: Kotlin + Jetpack Compose, CameraX, MediaProjection. |
 | `crates/silent-relay` | Signaling relay in Rust, for local development and self-hosting. |
 | `signal/` | The same relay as a Cloudflare Worker with Durable Objects, for production. |
 
@@ -47,6 +50,18 @@ The first window hosts a local relay on 127.0.0.1:8787 if nothing else is servin
 | `SILENT_TEST_PATTERN=1` | Camera button sends a moving test pattern instead of the webcam. |
 | `SILENT_NO_AUDIO=1` | Don't open audio devices; send silence. |
 | `SILENT_LOG=debug` | Verbose logs to stderr (nothing is written to disk). |
+
+## Android
+
+Needs the Android SDK (platform 35), NDK r28, `rustup target add aarch64-linux-android` and `cargo install cargo-ndk`.
+
+```sh
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
+android/build-native.sh                    # Rust engine, Kotlin bindings, libwebrtc.jar
+cd android && ./gradlew assembleDebug      # app/build/outputs/apk/debug/app-debug.apk
+```
+
+Pass `-PsilentRelayUrl=https://...` to Gradle to bake in a default relay. CI builds the APK on every push (artifact `silent-android`).
 
 ## Relay (Cloudflare Worker)
 

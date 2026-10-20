@@ -319,3 +319,58 @@ async fn four_friends_full_mesh_and_fifth_is_turned_away() {
         Ok(_) => panic!("expected RoomFull, got a room"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pushed_frames_arrive_upright() {
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut alice = Member::new(engine.create_room(settings(&relay, "Alice")).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+
+    // A phone held upright: the sensor delivers 640x480 landscape frames
+    // that must be turned 90 degrees clockwise.
+    alice.room.set_camera(Some(CameraTarget::External));
+    let input = alice.room.video_input(VideoKind::Camera);
+    let pusher = std::thread::spawn(move || {
+        let (w, h) = (640u32, 480u32);
+        let y = vec![120u8; (w * h) as usize];
+        let uv = vec![128u8; (w * h / 2) as usize];
+        for _ in 0..120 {
+            // Semi-planar chroma (NV12-style), as Android cameras deliver it.
+            input.push_yuv420(w, h, &y, &uv, &uv[1..], w, w, 2, 90);
+            std::thread::sleep(Duration::from_millis(33));
+        }
+    });
+
+    let track = bob.video(alice.room.me(), VideoKind::Camera).await;
+    let mut stream = NativeVideoStream::new(track);
+    let mut upright = None;
+    let deadline = Instant::now() + STEP;
+    while Instant::now() < deadline {
+        let Ok(Some(frame)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await
+        else {
+            continue;
+        };
+        if let Some(img) = silent_engine::render::to_rgba(&frame, 1920, 1920) {
+            if img.width > 2 {
+                upright = Some((img.width, img.height));
+                break;
+            }
+        }
+    }
+    pusher.join().unwrap();
+    assert_eq!(
+        upright,
+        Some((480, 640)),
+        "receiver should see a portrait image"
+    );
+}

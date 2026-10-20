@@ -131,6 +131,9 @@ pub enum ScreenTarget {
     Window(u64),
     /// A moving test pattern at the profile's full resolution and frame rate.
     TestPattern,
+    /// Frames are pushed by the app through [`crate::Room::video_input`]
+    /// (Android MediaProjection, iOS ReplayKit).
+    External,
 }
 
 /// What to put on the camera track.
@@ -140,6 +143,9 @@ pub enum CameraTarget {
     Device(u32),
     /// A moving test pattern at the profile's full resolution and frame rate.
     TestPattern,
+    /// Frames are pushed by the app through [`crate::Room::video_input`]
+    /// (Android CameraX, iOS AVFoundation).
+    External,
 }
 
 /// A thread pushing frames into a video source. Stops when dropped.
@@ -308,13 +314,124 @@ pub(crate) fn paced(fps: u32, stop: &AtomicBool, mut tick: impl FnMut()) {
 }
 
 pub(crate) fn push_i420(source: &NativeVideoSource, buffer: I420Buffer) {
+    push_rotated(source, buffer, VideoRotation::VideoRotation0);
+}
+
+fn push_rotated(source: &NativeVideoSource, buffer: I420Buffer, rotation: VideoRotation) {
     let frame = VideoFrame {
-        rotation: VideoRotation::VideoRotation0,
+        rotation,
         timestamp_us: now_us(),
         frame_metadata: None,
         buffer,
     };
     source.capture_frame(&frame);
+}
+
+/// Where an app pushes its own camera or screen frames (mobile platforms,
+/// where capture lives in Kotlin or Swift). Cheap to clone; frames are
+/// scaled down to the profile's limits before encoding.
+#[derive(Clone)]
+pub struct VideoInput {
+    pub(crate) source: NativeVideoSource,
+    pub(crate) encoding: Encoding,
+}
+
+impl VideoInput {
+    /// YUV 4:2:0 with arbitrary strides, as Android's `YUV_420_888` and most
+    /// camera APIs deliver it. `uv_pixel_stride` is 1 for planar (I420) and
+    /// 2 for semi-planar (NV12/NV21) chroma. `rotation_degrees` is how far
+    /// the image must be rotated clockwise to be upright.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_yuv420(
+        &self,
+        width: u32,
+        height: u32,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: u32,
+        uv_stride: u32,
+        uv_pixel_stride: u32,
+        rotation_degrees: u32,
+    ) {
+        let (w, h) = (width & !1, height & !1);
+        if w < 2 || h < 2 {
+            return;
+        }
+        let mut buf = I420Buffer::new(w, h);
+        let (sy, su, sv) = buf.strides();
+        let (dy, du, dv) = buf.data_mut();
+        for row in 0..h as usize {
+            let src = row * y_stride as usize;
+            let dst = row * sy as usize;
+            if src + w as usize > y.len() {
+                return;
+            }
+            dy[dst..dst + w as usize].copy_from_slice(&y[src..src + w as usize]);
+        }
+        let (cw, ch) = ((w / 2) as usize, (h / 2) as usize);
+        let ps = uv_pixel_stride.max(1) as usize;
+        for row in 0..ch {
+            let src = row * uv_stride as usize;
+            if src + (cw - 1) * ps >= u.len().min(v.len()) {
+                return;
+            }
+            let (du_row, dv_row) = (row * su as usize, row * sv as usize);
+            if ps == 1 {
+                du[du_row..du_row + cw].copy_from_slice(&u[src..src + cw]);
+                dv[dv_row..dv_row + cw].copy_from_slice(&v[src..src + cw]);
+            } else {
+                for col in 0..cw {
+                    du[du_row + col] = u[src + col * ps];
+                    dv[dv_row + col] = v[src + col * ps];
+                }
+            }
+        }
+        self.push(buf, rotation_degrees);
+    }
+
+    /// 32-bit RGBA pixels (R, G, B, A in memory), as Android's `ImageReader`
+    /// with `PixelFormat.RGBA_8888` delivers screen captures.
+    pub fn push_rgba(&self, width: u32, height: u32, stride: u32, data: &[u8]) {
+        let (w, h) = (width & !1, height & !1);
+        if w < 2 || h < 2 || data.len() < (stride * (h - 1) + w * 4) as usize {
+            return;
+        }
+        let mut buf = I420Buffer::new(w, h);
+        let (sy, su, sv) = buf.strides();
+        let (dy, du, dv) = buf.data_mut();
+        // RGBA bytes in memory are what libyuv calls ABGR.
+        libwebrtc::native::yuv_helper::abgr_to_i420(
+            data, stride, dy, sy, du, su, dv, sv, w as i32, h as i32,
+        );
+        self.push(buf, 0);
+    }
+
+    fn push(&self, buf: I420Buffer, rotation_degrees: u32) {
+        let rotation = match rotation_degrees % 360 {
+            90 => VideoRotation::VideoRotation90,
+            180 => VideoRotation::VideoRotation180,
+            270 => VideoRotation::VideoRotation270,
+            _ => VideoRotation::VideoRotation0,
+        };
+        let (w, h) = (buf.width(), buf.height());
+        // Limits apply to the upright image.
+        let sideways = matches!(
+            rotation,
+            VideoRotation::VideoRotation90 | VideoRotation::VideoRotation270
+        );
+        let (max_w, max_h) = if sideways {
+            (self.encoding.max_height, self.encoding.max_width)
+        } else {
+            (self.encoding.max_width, self.encoding.max_height)
+        };
+        let (tw, th) = fit(w, h, max_w, max_h);
+        let mut buf = buf;
+        if (tw, th) != (w, h) {
+            buf = buf.scale(tw as i32, th as i32);
+        }
+        push_rotated(&self.source, buf, rotation);
+    }
 }
 
 /// Horizontal bands that scroll plus a sweeping bar, so encoders see real
