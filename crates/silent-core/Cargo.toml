@@ -1,0 +1,19 @@
+[package]
+name = "silent-core"
+description = "Invite codes, PAKE handshake, sealed envelopes and wire protocol for Silent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+spake2 = "0.4"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+zeroize = { version = "1", features = ["derive"] }

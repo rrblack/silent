@@ -1,0 +1,5 @@
+[package]
+name = "silent-app"
+version.workspace = true
+edition.workspace = true
+publish = false
