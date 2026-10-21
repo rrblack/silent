@@ -86,6 +86,9 @@ jobs:
         run: cargo test -p silent-engine
 
       - name: Build app
+        env:
+          # Relay baked into the app; set it under Settings → Secrets and variables → Actions → Variables.
+          SILENT_RELAY_URL: ${{ vars.SILENT_RELAY_URL }}
         run: cargo build --release -p silent-app
 
       - uses: actions/upload-artifact@v4
@@ -122,7 +125,7 @@ jobs:
         run: android/build-native.sh
       - name: APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon "-PsilentRelayUrl=${{ vars.SILENT_RELAY_URL }}"
       - uses: actions/upload-artifact@v4
         with:
           name: silent-android
