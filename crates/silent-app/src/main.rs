@@ -21,8 +21,8 @@ use tokio::task::JoinHandle;
 slint::include_modules!();
 
 const DEFAULT_RELAY: &str = match option_env!("SILENT_RELAY_URL") {
-    Some(url) => url,
-    None => "http://127.0.0.1:8787",
+    Some(url) if !url.is_empty() => url,
+    _ => "http://127.0.0.1:8787",
 };
 
 /// Everything that lives on the tokio side.
