@@ -17,4 +17,10 @@ new_sqlite_classes = ["Room"]
 # Optional, for TURN relay credentials (Cloudflare Realtime TURN):
 #   wrangler secret put TURN_KEY_ID
 #   wrangler secret put TURN_KEY_API_TOKEN
+#   wrangler secret put CF_ACCOUNT_ID
+#   wrangler secret put CF_ANALYTICS_TOKEN   # API token with Account Analytics: Read
 # Without them, peers only get STUN and some networks will fail to connect.
+# TURN credentials stop once TURN egress over the last 31 days reaches
+# TURN_CAP_GB, keeping usage inside Cloudflare's 1,000 GB free tier.
+[vars]
+TURN_CAP_GB = "900"
