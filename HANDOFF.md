@@ -98,7 +98,12 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
    npx wrangler secret put TURN_KEY_ID
    npx wrangler secret put TURN_KEY_API_TOKEN
    ```
-3. The TURN endpoint in `signal/src/index.ts` was written from memory of Cloudflare's docs. Check it against the current docs when you enable TURN.
+3. Give the Worker a way to read TURN usage, so it can stop handing out TURN credentials before the free 1,000 GB a month runs out. In the Cloudflare dashboard, create an API token (My Profile → API Tokens → Create Custom Token) with **Account → Account Analytics → Read**, and copy your Account ID from the account home page:
+   ```powershell
+   npx wrangler secret put CF_ACCOUNT_ID
+   npx wrangler secret put CF_ANALYTICS_TOKEN
+   ```
+   Without these, the Worker hands out no TURN credentials. The cap is `TURN_CAP_GB` (900) in `wrangler.toml`, measured over the last 31 days. Credentials already handed out last up to 4 hours, so the 100 GB margin covers calls that are still running when the cap is reached.
 
 **Bake the URL into the builds** so nobody has to type it. Ask Claude to add the URL as `SILENT_RELAY_URL` in `ci.yml` for the desktop builds, and as `-PsilentRelayUrl=` for the Android build.
 

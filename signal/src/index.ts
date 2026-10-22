@@ -16,6 +16,9 @@ const NAMEPLATE_MAX = 9999;
 const RATE_BURST = 200;
 const RATE_PER_SEC = 50;
 const TURN_TTL_SECONDS = 4 * 60 * 60;
+const TURN_CAP_GB_DEFAULT = 900;
+const TURN_WINDOW_DAYS = 31;
+const USAGE_CACHE_MS = 5 * 60 * 1000;
 
 type ErrorCode = "room_full" | "room_taken" | "no_room" | "bad_request" | "too_large" | "rate_limited";
 
@@ -33,6 +36,9 @@ interface Env {
   ROOMS: DurableObjectNamespace<Room>;
   TURN_KEY_ID?: string;
   TURN_KEY_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
+  CF_ANALYTICS_TOKEN?: string;
+  TURN_CAP_GB?: string;
 }
 
 interface Attachment {
@@ -50,8 +56,50 @@ function rejectSocket(code: ErrorCode): Response {
   return new Response(null, { status: 101, webSocket: client });
 }
 
+let usageCheck: { at: number; underCap: boolean } | undefined;
+
+// Whether the account's TURN egress over the last TURN_WINDOW_DAYS is under
+// TURN_CAP_GB. A rolling window keeps any billing month under the cap,
+// whatever day the billing cycle starts. Fails closed: without analytics
+// credentials, or when the query fails, no TURN credentials are handed out.
+async function turnUnderCap(env: Env): Promise<boolean> {
+  if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return false;
+  const now = Date.now();
+  if (usageCheck && now - usageCheck.at < USAGE_CACHE_MS) return usageCheck.underCap;
+
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const from = day(now - (TURN_WINDOW_DAYS - 1) * 86_400_000);
+  const query = `{ viewer { accounts(filter: { accountTag: ${JSON.stringify(env.CF_ACCOUNT_ID)} }) {
+    callsTurnUsageAdaptiveGroups(filter: { date_geq: "${from}", date_leq: "${day(now)}" }, limit: 1) { sum { egressBytes } }
+  } } }`;
+  const cap = Number(env.TURN_CAP_GB) || TURN_CAP_GB_DEFAULT;
+  let underCap = false;
+  try {
+    const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    if (res.ok) {
+      const body = (await res.json()) as {
+        errors?: unknown[] | null;
+        data?: { viewer?: { accounts?: Array<{ callsTurnUsageAdaptiveGroups?: Array<{ sum?: { egressBytes?: number } }> }> } };
+      };
+      const groups = body.data?.viewer?.accounts?.[0]?.callsTurnUsageAdaptiveGroups;
+      if (!body.errors?.length && Array.isArray(groups)) {
+        const bytes = groups.reduce((n, g) => n + (g.sum?.egressBytes ?? 0), 0);
+        underCap = bytes < cap * 1e9;
+      }
+    }
+  } catch {
+    underCap = false;
+  }
+  usageCheck = { at: now, underCap };
+  return underCap;
+}
+
 async function iceConfig(env: Env): Promise<IceConfig> {
-  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) {
+  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN || !(await turnUnderCap(env))) {
     return { ice_servers: [STUN] };
   }
   try {

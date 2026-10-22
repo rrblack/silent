@@ -72,4 +72,8 @@ npx wrangler dev                           # local, same protocol as silent-rela
 npx wrangler deploy                        # production
 npx wrangler secret put TURN_KEY_ID        # optional: Cloudflare Realtime TURN
 npx wrangler secret put TURN_KEY_API_TOKEN
+npx wrangler secret put CF_ACCOUNT_ID      # with the next one, required for TURN:
+npx wrangler secret put CF_ANALYTICS_TOKEN # API token with Account Analytics: Read
 ```
+
+TURN credentials are only handed out while the account's TURN egress over the last 31 days is under `TURN_CAP_GB` (900 GB, in `wrangler.toml`), so usage stays in Cloudflare's free 1,000 GB a month. Past the cap, or if the usage check fails, peers get STUN only and Hide my IP can't connect.
