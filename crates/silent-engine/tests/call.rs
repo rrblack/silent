@@ -393,6 +393,14 @@ async fn four_friends_full_mesh_and_fifth_is_turned_away() {
             .await;
         assert_eq!(peer, cam_owner);
     }
+    // With three friends, a 720p camera goes out at 480p.
+    let friend = members[0].room.me();
+    until_stats(&members[2].room, friend, |s| {
+        s.sending
+            .iter()
+            .any(|v| v.kind == Some(VideoKind::Camera) && v.height > 0 && v.height <= 480)
+    })
+    .await;
 
     match engines[4].join_room(settings(&relay, "P5"), code).await {
         Err(RoomError::RoomFull) => {}

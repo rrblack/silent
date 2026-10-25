@@ -89,6 +89,21 @@ pub struct Encoding {
     pub degradation: DegradationPreference,
 }
 
+impl Encoding {
+    /// How much a camera is scaled down in a call with `friends` others.
+    /// Every friend gets their own encoder in a mesh, so bigger calls send
+    /// smaller video: 720p, then 540p, then 480p (1080p: 720p, then 540p).
+    pub(crate) fn mesh_scale(&self, friends: usize) -> f64 {
+        let heights: [u32; 3] = if self.max_height >= 1080 {
+            [1080, 720, 540]
+        } else {
+            [720, 540, 480]
+        };
+        let target = heights[friends.saturating_sub(1).min(2)];
+        (self.max_height as f64 / target as f64).max(1.0)
+    }
+}
+
 impl CameraProfile {
     pub fn encoding(self) -> Encoding {
         match self {
@@ -528,11 +543,13 @@ pub(crate) fn choose_speaker(factory: &PeerConnectionFactory, id: Option<String>
 }
 
 /// Applies the profile's limits to a video sender and pauses or resumes it.
-pub(crate) fn apply_encoding(sender: &RtpSender, encoding: &Encoding, active: bool) {
+/// `scale` shrinks the picture (and its bitrate cap) by that factor.
+pub(crate) fn apply_encoding(sender: &RtpSender, encoding: &Encoding, active: bool, scale: f64) {
     let mut params = sender.parameters();
     for enc in params.encodings.iter_mut() {
         enc.active = active;
-        enc.max_bitrate = Some(encoding.max_bitrate_bps);
+        enc.scale_resolution_down_by = Some(scale);
+        enc.max_bitrate = Some((encoding.max_bitrate_bps as f64 / scale) as u64);
         enc.max_framerate = Some(encoding.fps as f64);
         enc.priority = Priority::High;
     }
@@ -838,6 +855,19 @@ mod tests {
         );
         // Applying it twice changes nothing more.
         assert_eq!(stereo_computer_audio(&out), out);
+    }
+
+    #[test]
+    fn cameras_shrink_as_calls_grow() {
+        let standard = CameraProfile::Standard.encoding();
+        let heights: Vec<u32> = (1..=3)
+            .map(|friends| (720.0 / standard.mesh_scale(friends)).round() as u32)
+            .collect();
+        assert_eq!(heights, [720, 540, 480]);
+        let high = CameraProfile::High.encoding();
+        assert_eq!(high.mesh_scale(1), 1.0);
+        assert_eq!(high.mesh_scale(3), 2.0);
+        assert_eq!(standard.mesh_scale(0), 1.0);
     }
 
     #[test]

@@ -1031,6 +1031,8 @@ impl Actor {
                         p.apply_audio();
                     }
                 }
+                // One more friend: cameras shrink for everyone (`mesh_scale`).
+                self.sync_senders(None);
                 self.emit(RoomEvent::PeerVerified {
                     peer: from,
                     name: clean_name(&name),
@@ -1358,16 +1360,27 @@ impl Actor {
     /// `set_track(None)` would be the obvious alternative but crashes in
     /// libwebrtc-sys 0.3.49 (it dereferences the null track).
     fn sync_senders(&self, only: Option<PeerId>) {
+        let friends = self.peers.values().filter(|p| p.verified).count();
         for (&id, p) in &self.peers {
             if only.is_some_and(|o| o != id) {
                 continue;
             }
             for (kind, sender) in &p.video_senders {
-                let (on, encoding) = match kind {
-                    VideoKind::Camera => (self.media_state.camera, &self.media.camera.encoding),
-                    VideoKind::Screen => (self.media_state.screen, &self.media.screen.encoding),
+                let (on, encoding, scale) = match kind {
+                    VideoKind::Camera => {
+                        let encoding = &self.media.camera.encoding;
+                        (
+                            self.media_state.camera,
+                            encoding,
+                            encoding.mesh_scale(friends),
+                        )
+                    }
+                    // Screens stay sharp: text has to be readable.
+                    VideoKind::Screen => {
+                        (self.media_state.screen, &self.media.screen.encoding, 1.0)
+                    }
                 };
-                apply_encoding(sender, encoding, on);
+                apply_encoding(sender, encoding, on, scale);
             }
         }
     }
@@ -1379,6 +1392,9 @@ impl Actor {
         };
         if let Some(relay_id) = p.relay_id {
             self.ids.forget(relay_id);
+        }
+        if p.verified {
+            self.sync_senders(None);
         }
         self.fail_incoming(peer, &p);
         self.emit(RoomEvent::PeerLeft { peer });
