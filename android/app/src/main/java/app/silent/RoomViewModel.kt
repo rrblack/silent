@@ -168,6 +168,14 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         }
         busy = true
         error = ""
+        // Reset before the room starts: its first events (friends already
+        // there) can arrive before joinRoom returns.
+        slots.clear()
+        notice = ""
+        stats = emptyList()
+        speaking = emptySet()
+        friends.clear()
+        chat.clear()
         val listener = Listener()
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -178,27 +186,24 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
             busy = false
             result.onSuccess { r ->
                 this@RoomViewModel.listener = listener
-                slots.clear()
-                notice = ""
-                stats = emptyList()
                 created = code == null
                 room = r
                 startedAt = SystemClock.elapsedRealtime()
                 ActiveCall.room = r
                 this@RoomViewModel.code = r.code()
                 me = r.me()
-                speaking = emptySet()
                 micOn = true
                 cameraOn = false
                 screenOn = false
-                friends.clear()
-                chat.clear()
                 ActiveCall.controls = controls
                 speakerOn = true
                 ActiveCall.speaker = true
                 if (created) system("Room created. Share the code with up to three friends.")
                 CallService.start(getApplication())
-            }.onFailure { error = describe(it) }
+            }.onFailure {
+                listener.active = false
+                error = describe(it)
+            }
         }
     }
 

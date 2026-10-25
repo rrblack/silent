@@ -46,7 +46,7 @@ cargo test --workspace                 # 58 tests incl. real in-process WebRTC c
 cargo clippy --workspace --all-targets # must stay warning-free
 cargo fmt --all
 cargo run --release -p silent-app      # twice, to call yourself
-cargo run -p silent-engine --example bot -- http://127.0.0.1:8787 <code> [file]   # a test participant: beeps, test pattern, echoes chat, sends a file
+cargo run -p silent-engine --example bot -- http://127.0.0.1:8787 <code> [file]   # a test participant: beeps, test pattern, echoes chat, sends a file; BOT_SCREEN=1 also shares a screen
 
 cd signal && npx tsc --noEmit          # Worker typecheck
 SILENT_TEST_RELAY=http://127.0.0.1:8787 cargo test -p silent-relay   # protocol tests against `wrangler dev`

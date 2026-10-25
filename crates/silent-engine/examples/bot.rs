@@ -1,6 +1,7 @@
 //! A call participant without a screen, for testing: it joins a room with a
 //! beeping microphone and a test-pattern camera, echoes chat back, and can
-//! send a file once someone is connected.
+//! send a file once someone is connected. With `BOT_SCREEN=1` it also shares
+//! a test-pattern screen (1080p, 60 fps).
 //!
 //! ```sh
 //! cargo run -p silent-engine --example bot -- http://127.0.0.1:8787 1234-word-word-word [file]
@@ -9,7 +10,8 @@
 use std::time::Duration;
 
 use silent_engine::{
-    AudioInput, CameraProfile, CameraTarget, Engine, RoomEvent, ScreenProfile, Settings,
+    AudioInput, CameraProfile, CameraTarget, Engine, RoomEvent, ScreenProfile, ScreenTarget,
+    Settings,
 };
 
 #[tokio::main]
@@ -31,6 +33,9 @@ async fn main() -> anyhow::Result<()> {
     let mut room = Engine::new().join_room(settings, code.parse()?).await?;
     let mut events = room.take_events();
     room.set_camera(Some(CameraTarget::TestPattern));
+    if std::env::var_os("BOT_SCREEN").is_some() {
+        room.share_screen(Some(ScreenTarget::TestPattern));
+    }
     println!("joined as {}", room.me());
 
     let mut sent = false;
