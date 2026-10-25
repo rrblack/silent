@@ -68,6 +68,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] **Stats** names the codec and encoder. Expect `VP8 via libvpx` (software) on Windows: the libwebrtc build used has no hardware encoders there. On a Mac it should say `H264 via VideoToolbox`, and on Linux with an Intel or AMD GPU, VAAPI. To compare, start the app with `SILENT_VIDEO_CODEC=vp8` or `h264`.
    - [ ] Talk: your tile gets a green ring in the other window. Hover a friend's tile → **Mute for me** silences them for you only, and the slider under it makes them quieter or louder (0–200 %).
    - [ ] Click **+** next to the chat box and send a photo: it shows in both chats, and **Save…** writes it where you choose.
+   - [ ] Drag a file from Explorer onto the window: "Drop to send" appears, and dropping sends it (not on Linux Wayland, where winit has no drag and drop; untested, no drag source in the cloud container). A file over 64 MB is refused without being read whole.
    - [ ] Click a tile: it fills the stage. A friend's screen share takes the stage by itself. Double-click or **F11** for full screen, **Esc** to come back.
    - [ ] **Ctrl+D** mutes (the tile label turns red on both sides), **Ctrl+E** toggles the camera.
    - [ ] Settings → **Push to talk**: in the room you start muted; holding Space (outside the chat box; Esc leaves it) unmutes.

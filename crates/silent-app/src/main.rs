@@ -658,6 +658,82 @@ impl UiState {
     }
 }
 
+/// Reads `path` off the UI thread and sends it to everyone, if the room the
+/// user picked it in (`generation`) is still the current one.
+fn send_path(path: std::path::PathBuf, picked_in: u64) {
+    backend().rt.spawn_blocking(move || {
+        let name = path
+            .file_name()
+            .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+        let read = files::read_to_send(&path);
+        // The room may have been left (or another joined) meanwhile.
+        if generation() != picked_in {
+            return;
+        }
+        let data = match read {
+            Ok(Some(data)) => data,
+            Ok(None) => {
+                let message = format!("{name} can't be sent: files can be up to 64 MB.");
+                let _ = slint::invoke_from_event_loop(move || ui(|s| s.system(message)));
+                return;
+            }
+            Err(e) => {
+                let message = format!("Couldn't read {name}: {e}.");
+                let _ = slint::invoke_from_event_loop(move || ui(|s| s.system(message)));
+                return;
+            }
+        };
+        let size = data.len();
+        let mut sent = None;
+        with_room(|r| sent = Some(r.send_file(&name, data.clone())));
+        let _ = slint::invoke_from_event_loop(move || {
+            ui(|s| match sent {
+                Some(Ok(())) => {
+                    s.sent_files += 1;
+                    let key = format!("me:{}", s.sent_files);
+                    s.chat.push(ChatLine {
+                        who: s.my_name.as_str().into(),
+                        time: clock(),
+                        text: format!("File: {name} ({})", files::size_text(size)).into(),
+                        mine: true,
+                        file: key.as_str().into(),
+                        file_ready: true,
+                        ..Default::default()
+                    });
+                    s.show_preview(key, data);
+                }
+                Some(Err(e)) => s.system(format!("Couldn't send {name}: {e}.")),
+                None => {}
+            })
+        });
+    });
+}
+
+/// Files dragged onto the window are sent to everyone in the room. (winit
+/// has no drag and drop on Wayland; there the + button still works.)
+fn accept_dropped_files(window: &AppWindow) {
+    use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+    let weak = window.as_weak();
+    window.window().on_winit_window_event(move |_, event| {
+        let Some(w) = weak.upgrade() else {
+            return EventResult::Propagate;
+        };
+        let in_room = w.get_screen() == "room";
+        match event {
+            WindowEvent::HoveredFile(_) => w.set_dropping(in_room),
+            WindowEvent::HoveredFileCancelled => w.set_dropping(false),
+            WindowEvent::DroppedFile(path) => {
+                w.set_dropping(false);
+                if in_room {
+                    send_path(path.clone(), generation());
+                }
+            }
+            _ => {}
+        }
+        EventResult::Propagate
+    });
+}
+
 fn settings_from(w: &AppWindow) -> Settings {
     Settings {
         relay_url: w.get_relay_url().trim().to_string(),
@@ -1154,36 +1230,9 @@ fn main() -> anyhow::Result<()> {
     window.on_send_file(|| {
         let picked_in = generation();
         backend().rt.spawn(async move {
-            let Some((name, data)) = files::pick().await else {
-                return;
-            };
-            // The room may have been left (or another joined) meanwhile.
-            if generation() != picked_in {
-                return;
+            if let Some(path) = files::pick().await {
+                send_path(path, picked_in);
             }
-            let size = data.len();
-            let mut sent = None;
-            with_room(|r| sent = Some(r.send_file(&name, data.clone())));
-            let _ = slint::invoke_from_event_loop(move || {
-                ui(|s| match sent {
-                    Some(Ok(())) => {
-                        s.sent_files += 1;
-                        let key = format!("me:{}", s.sent_files);
-                        s.chat.push(ChatLine {
-                            who: s.my_name.as_str().into(),
-                            time: clock(),
-                            text: format!("File: {name} ({})", files::size_text(size)).into(),
-                            mine: true,
-                            file: key.as_str().into(),
-                            file_ready: true,
-                            ..Default::default()
-                        });
-                        s.show_preview(key, data);
-                    }
-                    Some(Err(e)) => s.system(format!("Couldn't send {name}: {e}.")),
-                    None => {}
-                })
-            });
         });
     });
 
@@ -1224,6 +1273,7 @@ fn main() -> anyhow::Result<()> {
         );
     });
 
+    accept_dropped_files(&window);
     window.run()?;
     drop(stats_timer);
 

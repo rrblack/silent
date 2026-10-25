@@ -733,6 +733,8 @@ export component AppWindow inherits Window {
     in-out property <bool> relay-only: false;
     in-out property <bool> push-to-talk: false;
     in-out property <bool> sounds: true;
+    /// A file is being dragged over the window.
+    in property <bool> dropping;
     in-out property <string> relay-url;
 
     in property <string> code;
@@ -983,5 +985,25 @@ export component AppWindow inherits Window {
             wrap: word-wrap;
         }
         PillButton { label: "Done"; clicked => { root.stats-open = false; } }
+    }
+
+    if root.screen == "room" && root.dropping: Rectangle {
+        background: #000000c8;
+        Rectangle {
+            x: 24px;
+            y: 24px;
+            width: parent.width - 48px;
+            height: parent.height - 48px;
+            border-radius: 16px;
+            border-width: 2px;
+            border-color: Palette.accent;
+            Text {
+                text: "Drop to send to everyone in the room";
+                color: Palette.text;
+                font-size: 20px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
     }
 }

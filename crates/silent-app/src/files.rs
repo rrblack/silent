@@ -44,13 +44,24 @@ pub fn preview(data: &[u8]) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
 }
 
 /// Asks for a file to send. `None` when the user cancels.
-pub async fn pick() -> Option<(String, Vec<u8>)> {
+pub async fn pick() -> Option<std::path::PathBuf> {
     let handle = rfd::AsyncFileDialog::new()
         .set_title("Send a file")
         .pick_file()
         .await?;
-    let data = handle.read().await;
-    Some((handle.file_name(), data))
+    Some(handle.path().to_path_buf())
+}
+
+/// Reads a file to send. `Ok(None)` when it's over the size limit, which is
+/// found without reading more than the limit.
+pub fn read_to_send(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let limit = silent_core::proto::MAX_FILE_BYTES;
+    let mut data = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut data)?;
+    Ok((data.len() as u64 <= limit).then_some(data))
 }
 
 /// Asks where to save `data`, then writes it. `Ok(false)` when cancelled.
