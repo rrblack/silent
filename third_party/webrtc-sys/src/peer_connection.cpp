@@ -57,6 +57,11 @@ webrtc::PeerConnectionInterface::RTCConfiguration to_native_rtc_configuration(
 
   rtc_config.enable_sctp_snap = config.enable_sctp_snap;
 
+  // Silent: everything goes over one bundled transport, so gather for that
+  // one only instead of once per m-line (five times the candidates).
+  rtc_config.bundle_policy =
+      webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
+
   return rtc_config;
 }
 

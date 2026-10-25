@@ -4,7 +4,7 @@
 
 [webrtc-sys](https://crates.io/crates/webrtc-sys) 0.3.49 from LiveKit
 (Apache-2.0, see `webrtc-sys/NOTICE.md`), patched in through
-`[patch.crates-io]` in the workspace `Cargo.toml`. Three changes.
+`[patch.crates-io]` in the workspace `Cargo.toml`. Four changes.
 
 The log level, in `src/webrtc.cpp`:
 
@@ -35,6 +35,16 @@ stats showed the live allocations were each process's own outgoing frames).
 The factory creates every queue at normal priority (low stays low) and, on
 Linux, moves its thread back to `SCHED_OTHER`. With it the same soak stays
 flat.
+
+Max-bundle, in `to_native_rtc_configuration` (`src/peer_connection.cpp`):
+webrtc-sys has no bundle policy field, so libwebrtc used its default,
+balanced, and gathered ICE candidates for each of the five m-lines until the
+answer arrived. Each candidate is one signaling message, so the offering
+side of a four-person join sent well over 200 in half a second and the relay
+cut it off for flooding (`RateLimited`; `four_friends_full_mesh_and_fifth_is_turned_away`
+failed about one run in thirty). Every Silent peer bundles anyway, so the
+patch sets `kBundlePolicyMaxBundle` and gathers for the one transport in use:
+about five times fewer candidates.
 
 ## libwebrtc
 

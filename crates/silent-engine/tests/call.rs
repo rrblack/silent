@@ -450,8 +450,9 @@ async fn pushed_frames_arrive_upright() {
         else {
             continue;
         };
+        // Skip the source's black keepalive frames from before the first push.
         if let Some(img) = silent_engine::render::to_rgba(&frame, 1920, 1920) {
-            if img.width > 2 {
+            if img.width > 2 && img.data[..4] != [0, 0, 0, 255] {
                 upright = Some((img.width, img.height));
                 break;
             }

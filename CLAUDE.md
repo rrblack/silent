@@ -24,7 +24,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 | `android/` | Kotlin + Jetpack Compose app, CameraX, MediaProjection | `build-native.sh` must run before Gradle. |
 | `ios/` | SwiftUI app, AVFoundation camera | XcodeGen `project.yml`; `build-native.sh` makes the XCFramework and Swift bindings (Mac only). See `ios/README.md`. |
 | `packaging/` | Icons, macOS `Info.plist`, Linux `.desktop`, `package.sh` | `package.sh` turns a release build into `dist/` (dmg, deb + tarball, zip). CI runs it. |
-| `third_party/` | webrtc-sys 0.3.49 (log sink at warnings, not verbose; remote track volume) and libwebrtc 0.3.52 (exposes that volume) | Patched in via `[patch.crates-io]`. Read its README before upgrading libwebrtc. |
+| `third_party/` | webrtc-sys 0.3.49 (log sink at warnings, not verbose; remote track volume; fair task queues; max-bundle) and libwebrtc 0.3.52 (exposes that volume) | Patched in via `[patch.crates-io]`. Read its README before upgrading libwebrtc. |
 | `docs/SECURITY.md` | Protocol and threat model | Update it whenever the protocol changes. |
 
 ## How a call works (short version)
@@ -100,3 +100,4 @@ Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` an
 13. **Upstream webrtc-sys logs at verbose.** Every log line gets formatted and dcSCTP hex-dumps each data channel packet (CPU in every call, files under 1 MB/s). `third_party/webrtc-sys` patches the sink to warnings; keep that patch when upgrading.
 14. Hardware encoders are compiled in only when their headers are present at build time: `libva-dev` for VAAPI on Linux (CI installs it), the CUDA toolkit for NVENC on Linux. There is no Windows hardware encoder in webrtc-sys.
 15. **libwebrtc's task queues run at real-time priority** where allowed. Saturating the CPU with several video senders then starved its worker thread and leaked outgoing frames (GBs in minutes). `third_party/webrtc-sys` gives it a `FairTaskQueueFactory`; keep it when upgrading. To check: the desktop app plus three bots for several minutes, watching RSS (`ps -o rss=`).
+16. **webrtc-sys exposes no bundle policy**, and libwebrtc's default (balanced) gathers ICE candidates for every m-line. With five m-lines a four-person join sent hundreds of signaling messages and the relay rate-limited the joiner. `third_party/webrtc-sys` forces max-bundle; keep it when upgrading. The relay logs the reason a peer left at debug (`RUST_LOG=silent_relay=debug`).

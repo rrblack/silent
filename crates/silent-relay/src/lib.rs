@@ -361,5 +361,5 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
     {
         writer.abort();
     }
-    tracing::debug!(room = nameplate, peer = me, "left");
+    tracing::debug!(room = nameplate, peer = me, ?error, "left");
 }
