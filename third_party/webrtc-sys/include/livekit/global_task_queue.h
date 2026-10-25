@@ -16,9 +16,14 @@
 
 #pragma once
 
+#include <memory>
+
 #include "api/task_queue/task_queue_factory.h"
 
 namespace livekit_ffi {
+
+// Silent: task queues on ordinary threads (see the comment in the .cpp).
+std::unique_ptr<webrtc::TaskQueueFactory> CreateFairTaskQueueFactory();
 
 webrtc::TaskQueueFactory* GetGlobalTaskQueueFactory();
 

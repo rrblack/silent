@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::handshake::PeerId;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_PEERS: usize = 4;
 pub const MAX_RELAY_DATA: usize = 64 * 1024;
 pub const MAX_NAME_CHARS: usize = 32;

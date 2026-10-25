@@ -42,9 +42,9 @@ use silent_core::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::media::{
-    apply_encoding, hardware_encoder, test_pattern, AudioInput, CameraProfile, CameraTarget,
-    CodecChoice, LocalMedia, Producer, ScreenAudioInput, ScreenProfile, ScreenTarget, VideoInput,
-    VideoKind, STREAM_AUDIO, STREAM_SCREEN_AUDIO,
+    apply_encoding, hardware_encoder, stereo_computer_audio, test_pattern, AudioInput,
+    CameraProfile, CameraTarget, CodecChoice, LocalMedia, Producer, ScreenAudioInput,
+    ScreenProfile, ScreenTarget, VideoInput, VideoKind, STREAM_AUDIO, STREAM_SCREEN_AUDIO,
 };
 use crate::signaling::{self, SignalError, SignalLink, Welcome};
 use crate::stats::{self, PeerStats, Quality};
@@ -60,6 +60,11 @@ const MAX_RESTARTS: u32 = 12;
 /// How long a friend who left the relay keeps their direct connection while
 /// it is not working, before they count as gone.
 const ORPHAN_GRACE: Duration = Duration::from_secs(10);
+/// How long an off-relay friend whose data channel closed has to come back
+/// on the relay before they count as gone. When the relay returns, the
+/// friend often verifies the new pair first and closes the old connection,
+/// which arrives directly, before their Hello arrives through the relay.
+const HANGUP_GRACE: Duration = Duration::from_secs(5);
 const RELAY_RETRY_MAX: Duration = Duration::from_secs(15);
 /// Unsent bytes a data channel may hold before a file transfer waits.
 const FILE_BUFFER_HIGH: u64 = 4 * 1024 * 1024;
@@ -219,6 +224,10 @@ enum Internal {
         data: Vec<u8>,
     },
     DcClosed {
+        peer: PeerId,
+    },
+    /// `HANGUP_GRACE` after an off-relay friend's data channel closed.
+    HungUp {
         peer: PeerId,
     },
     FileData {
@@ -1044,6 +1053,10 @@ impl Actor {
                 }
                 self.prefer_codecs(from, &pc);
                 let answer = pc.create_answer(AnswerOptions::default()).await?;
+                let answer = SessionDescription::parse(
+                    &stereo_computer_audio(&answer.to_string()),
+                    SdpType::Answer,
+                )?;
                 pc.set_local_description(answer.clone()).await?;
                 self.after_remote_description(from, &sdp).await;
                 self.send_signal(
@@ -1115,6 +1128,8 @@ impl Actor {
             offer_to_receive_video: true,
         };
         let offer = pc.create_offer(options).await?;
+        let offer =
+            SessionDescription::parse(&stereo_computer_audio(&offer.to_string()), SdpType::Offer)?;
         pc.set_local_description(offer.clone()).await?;
         self.send_signal(
             peer,
@@ -1535,7 +1550,19 @@ impl Actor {
             Internal::DcMessage { peer, data } => self.on_channel(peer, &data),
             Internal::FileData { peer, data } => self.on_file_frame(peer, &data),
             Internal::DcClosed { peer } => {
-                // An orphan's data channel closing means they hung up.
+                // An orphan's data channel closing means they hung up, or
+                // that they are back on the relay under a new id: give the
+                // new pair time to replace this one.
+                if self.peers.get(&peer).is_some_and(|p| p.relay_id.is_none()) {
+                    let internal = self.internal.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(HANGUP_GRACE).await;
+                        let _ = internal.send(Internal::HungUp { peer });
+                    });
+                }
+            }
+            Internal::HungUp { peer } => {
+                // Still here, so nobody replaced them.
                 if self.peers.get(&peer).is_some_and(|p| p.relay_id.is_none()) {
                     self.drop_peer(peer);
                 }

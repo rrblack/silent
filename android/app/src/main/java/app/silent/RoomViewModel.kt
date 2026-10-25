@@ -178,6 +178,9 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         speaking = emptySet()
         friends.clear()
         chat.clear()
+        created = code == null
+        me = 0u
+        leaveOnEntry = null
         val listener = Listener()
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -188,7 +191,6 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
             busy = false
             result.onSuccess { r ->
                 this@RoomViewModel.listener = listener
-                created = code == null
                 room = r
                 startedAt = SystemClock.elapsedRealtime()
                 ActiveCall.room = r
@@ -202,6 +204,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 ActiveCall.speaker = true
                 if (created) system("Room created. Share the code with up to three friends.")
                 CallService.start(getApplication())
+                leaveOnEntry?.let { leave(it) }
             }.onFailure {
                 listener.active = false
                 error = describe(it)
@@ -417,8 +420,14 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Set when the room told us to go before joinRoom returned. */
+    private var leaveOnEntry: String? = null
+
     fun leave(reason: String = "") {
-        val r = room ?: return
+        val r = room ?: run {
+            if (busy) leaveOnEntry = reason
+            return
+        }
         room = null
         ActiveCall.room = null
         ActiveCall.controls = null

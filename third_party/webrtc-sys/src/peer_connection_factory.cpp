@@ -20,10 +20,6 @@
 #include <utility>
 #include <vector>
 
-#if defined(WEBRTC_LINUX) || defined(WEBRTC_ANDROID)
-#include <pthread.h>
-#include <sched.h>
-#endif
 
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
@@ -42,6 +38,7 @@
 #include "api/audio_options.h"
 #include "livekit/adm_proxy.h"
 #include "livekit/audio_track.h"
+#include "livekit/global_task_queue.h"
 #include "livekit/peer_connection.h"
 #include "livekit/rtc_error.h"
 #include "livekit/rtp_parameters.h"
@@ -124,40 +121,6 @@ class CompositeFieldTrials final : public webrtc::FieldTrialsView {
   std::vector<std::unique_ptr<webrtc::FieldTrialsView>> views_;
 };
 
-// Silent: libwebrtc runs its video encoder and decoder queues at real-time
-// priority where the platform allows it: high-priority queues are
-// TIME_CRITICAL on Windows, and on Linux every queue gets SCHED_FIFO when
-// permitted (as root, or with an rtprio limit). When a call saturates the
-// CPU, those threads starve libwebrtc's own normal-priority worker thread,
-// frames queue up for it without bound and memory grows by megabytes a
-// second. Video queues run at normal priority instead, so every thread gets
-// its share; audio keeps its priority, it is cheap.
-class FairTaskQueueFactory : public webrtc::TaskQueueFactory {
- public:
-  FairTaskQueueFactory() : base_(webrtc::CreateDefaultTaskQueueFactory()) {}
-
-  std::unique_ptr<webrtc::TaskQueueBase, webrtc::TaskQueueDeleter>
-  CreateTaskQueue(absl::string_view name, Priority priority) const override {
-    if (priority == Priority::kAudio) {
-      return base_->CreateTaskQueue(name, priority);
-    }
-    auto queue = base_->CreateTaskQueue(
-        name, priority == Priority::kLow ? priority : Priority::kNormal);
-#if defined(WEBRTC_LINUX) || defined(WEBRTC_ANDROID)
-    // Even kNormal is SCHED_FIFO on Linux; the queue's first task moves its
-    // thread back to the ordinary scheduler.
-    queue->PostTask([] {
-      sched_param param = {};
-      pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
-    });
-#endif
-    return queue;
-  }
-
- private:
-  std::unique_ptr<webrtc::TaskQueueFactory> base_;
-};
-
 // zero_playout_delay and enable_warp are independent and may both be enabled;
 // their field-trial views are composed into one.
 webrtc::Environment CreateEnvironment(bool zero_playout_delay,
@@ -171,10 +134,10 @@ webrtc::Environment CreateEnvironment(bool zero_playout_delay,
   }
 
   if (views.empty()) {
-    return webrtc::CreateEnvironment(std::make_unique<FairTaskQueueFactory>());
+    return webrtc::CreateEnvironment(CreateFairTaskQueueFactory());
   }
   return webrtc::CreateEnvironment(
-      std::make_unique<FairTaskQueueFactory>(),
+      CreateFairTaskQueueFactory(),
       std::make_unique<CompositeFieldTrials>(std::move(views)));
 }
 

@@ -57,10 +57,16 @@ pub async fn pick() -> Option<std::path::PathBuf> {
 pub fn read_to_send(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
     use std::io::Read;
     let limit = silent_core::proto::MAX_FILE_BYTES;
+    let file = std::fs::File::open(path)?;
+    // Not a pipe or a device, which could keep the read going forever.
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a file",
+        ));
+    }
     let mut data = Vec::new();
-    std::fs::File::open(path)?
-        .take(limit + 1)
-        .read_to_end(&mut data)?;
+    file.take(limit + 1).read_to_end(&mut data)?;
     Ok((data.len() as u64 <= limit).then_some(data))
 }
 

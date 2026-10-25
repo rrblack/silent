@@ -158,11 +158,10 @@ class ScreenShareService : Service() {
 
     override fun onDestroy() {
         capturingAudio = false
+        // Stopping unblocks a waiting read, so the thread can finish first.
+        audio?.let { runCatching { it.stop() } }
         audioThread?.join(500)
-        audio?.run {
-            runCatching { stop() }
-            release()
-        }
+        audio?.release()
         display?.release()
         reader?.close()
         projection?.stop()

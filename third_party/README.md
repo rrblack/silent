@@ -22,8 +22,9 @@ call. As of webrtc-sys 0.3.51 upstream still hardcodes verbose.
 `include/livekit/audio_track.h`): sets the playback volume of a remote track
 through `AudioSourceInterface::SetVolume`, for the per-friend volume.
 
-`FairTaskQueueFactory` in `src/peer_connection_factory.cpp`, passed to
-`webrtc::CreateEnvironment`: libwebrtc's task queues (video encoders,
+`FairTaskQueueFactory` in `src/global_task_queue.cpp`, passed to
+`webrtc::CreateEnvironment` (`src/peer_connection_factory.cpp`) and behind
+`GetGlobalTaskQueueFactory()`: libwebrtc's task queues (video encoders,
 decoders, render queues) run at real-time priority where the platform allows
 it (`TIME_CRITICAL` for high-priority queues on Windows; `SCHED_FIFO` for
 every queue on Linux when permitted, e.g. as root). With three or more
@@ -31,8 +32,9 @@ people sending video and the CPU saturated, those threads starved libwebrtc's
 normal-priority worker thread, captured frames queued up for it without
 bound, and memory grew by 5–15 MB a second (found with a soak test; jemalloc
 stats showed the live allocations were each process's own outgoing frames).
-The factory creates every non-audio queue at normal priority and, on Linux,
-moves its thread back to `SCHED_OTHER`. With it the same soak stays flat.
+The factory creates every queue at normal priority (low stays low) and, on
+Linux, moves its thread back to `SCHED_OTHER`. With it the same soak stays
+flat.
 
 ## libwebrtc
 

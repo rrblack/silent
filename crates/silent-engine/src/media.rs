@@ -264,11 +264,13 @@ impl LocalMedia {
         };
         // No echo cancellation or noise suppression: it's music and games,
         // and it never came through a microphone.
+        // No queue: frames go straight to the encoders at the capture's own
+        // pace, so the delay can't build up when the two clocks drift.
         let screen_source = NativeAudioSource::new(
             AudioSourceOptions::default(),
             SCREEN_AUDIO_RATE,
             SCREEN_AUDIO_CHANNELS,
-            100,
+            0,
         );
         let screen_audio = factory.create_audio_track(STREAM_SCREEN_AUDIO, screen_source.clone());
         let (chunks, queued) = tokio::sync::mpsc::channel(SCREEN_AUDIO_QUEUE);
@@ -312,6 +314,39 @@ impl Drop for LocalMedia {
     }
 }
 
+/// Marks the computer audio m-line of our own offer or answer as stereo,
+/// which is how libwebrtc learns the other side may send it in stereo (it
+/// mixes Opus down to mono otherwise), with room for music-grade bitrate.
+pub(crate) fn stereo_computer_audio(sdp: &str) -> String {
+    let marker = format!("a=msid:{STREAM_SCREEN_AUDIO} ");
+    let mut out = String::with_capacity(sdp.len() + 64);
+    for (i, section) in sdp.split("\r\nm=").enumerate() {
+        if i > 0 {
+            out.push_str("\r\nm=");
+        }
+        if !section.lines().any(|l| l.starts_with(&marker)) {
+            out.push_str(section);
+            continue;
+        }
+        let opus = section.lines().find_map(|l| {
+            let (pt, codec) = l.strip_prefix("a=rtpmap:")?.split_once(' ')?;
+            codec.starts_with("opus/").then(|| pt.to_string())
+        });
+        let fmtp = opus.map(|pt| format!("a=fmtp:{pt} "));
+        let lines: Vec<String> = section
+            .split("\r\n")
+            .map(|l| match &fmtp {
+                Some(f) if l.starts_with(f.as_str()) && !l.contains("stereo=") => {
+                    format!("{l};stereo=1;sprop-stereo=1;maxaveragebitrate=128000")
+                }
+                _ => l.to_string(),
+            })
+            .collect();
+        out.push_str(&lines.join("\r\n"));
+    }
+    out
+}
+
 /// Chunks of computer audio waiting for the source; more are dropped.
 const SCREEN_AUDIO_QUEUE: usize = 32;
 
@@ -333,23 +368,27 @@ impl ScreenAudioInput {
     }
 }
 
-/// Hands pushed computer audio to `source` in order. Each capture is
-/// awaited: libwebrtc holds on to it until the source's queue has room.
+/// Hands pushed computer audio to `source` in order, cut into the exact
+/// 10 ms frames its unqueued path takes.
 async fn feed_screen_audio(
     source: NativeAudioSource,
     mut chunks: tokio::sync::mpsc::Receiver<Vec<i16>>,
 ) {
-    let channels = SCREEN_AUDIO_CHANNELS as usize;
-    while let Some(mut data) = chunks.recv().await {
-        data.truncate(data.len() / channels * channels);
-        let frame = AudioFrame {
-            samples_per_channel: (data.len() / channels) as u32,
-            data: data.into(),
-            sample_rate: SCREEN_AUDIO_RATE,
-            num_channels: SCREEN_AUDIO_CHANNELS,
-        };
-        // A full queue (a burst from the capture) drops the chunk.
-        let _ = source.capture_frame(&frame).await;
+    const FRAME: usize = (SCREEN_AUDIO_RATE / 100 * SCREEN_AUDIO_CHANNELS) as usize;
+    let mut pending: Vec<i16> = Vec::with_capacity(FRAME * 4);
+    while let Some(chunk) = chunks.recv().await {
+        pending.extend_from_slice(&chunk);
+        let whole = pending.len() / FRAME * FRAME;
+        for frame in pending[..whole].chunks_exact(FRAME) {
+            let frame = AudioFrame {
+                data: frame.into(),
+                sample_rate: SCREEN_AUDIO_RATE,
+                num_channels: SCREEN_AUDIO_CHANNELS,
+                samples_per_channel: SCREEN_AUDIO_RATE / 100,
+            };
+            let _ = source.capture_frame(&frame).await;
+        }
+        pending.drain(..whole);
     }
 }
 
@@ -775,6 +814,31 @@ fn h264_first(mut codecs: Vec<RtpCodecCapability>) -> Vec<RtpCodecCapability> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_computer_audio_line_turns_stereo() {
+        let sdp = "v=0\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=msid:silent-audio t1\r\n\
+            a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:3\r\na=msid:silent-screen-audio t2\r\n\
+            a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n";
+        let out = stereo_computer_audio(sdp);
+        let fmtps: Vec<&str> = out
+            .lines()
+            .filter(|l| l.starts_with("a=fmtp:111"))
+            .collect();
+        assert_eq!(fmtps[0], "a=fmtp:111 minptime=10;useinbandfec=1");
+        assert_eq!(
+            fmtps[1],
+            "a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000"
+        );
+        assert_eq!(
+            out.len(),
+            sdp.len() + ";stereo=1;sprop-stereo=1;maxaveragebitrate=128000".len()
+        );
+        // Applying it twice changes nothing more.
+        assert_eq!(stereo_computer_audio(&out), out);
+    }
 
     #[test]
     fn fit_keeps_aspect_and_even_sizes() {

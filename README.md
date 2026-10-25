@@ -7,6 +7,7 @@ No accounts, nothing stored. Share a code like `4071-amber-falcon-river` and you
 - **End to end.** Codes are never sent anywhere. Peers prove they know the code with a PAKE (SPAKE2), seal all signaling with the resulting keys, and use that to authenticate the DTLS media connection. The relay only ever sees a room number and ciphertext. Safety words let friends confirm nobody is in the middle.
 - **Native.** Rust and libwebrtc, with a Slint UI on Windows, macOS and Linux, Jetpack Compose on Android and SwiftUI on iOS (early).
 - **Keeps going.** Calls ride out network switches (ICE restart) and relay outages (the room rejoins by itself while media stays peer to peer).
+- **For friends, not meetings.** Share your screen with its sound (Windows, Android), send files and images, turn one friend down or mute them just for you, see who's talking and whose connection is weak, push to talk, a chime when someone joins.
 
 See [docs/SECURITY.md](docs/SECURITY.md) for the protocol and threat model, and [HANDOFF.md](HANDOFF.md) for the current state and the testing plan.
 
@@ -55,9 +56,9 @@ The first window hosts a local relay on 127.0.0.1:8787 if nothing else is servin
 | `SILENT_LOG=debug` | Verbose logs to stderr (nothing is written to disk). |
 | `SILENT_VIDEO_CODEC=h264` or `vp8` | Override the video codec choice (H.264 when a hardware encoder is found, else VP8). |
 
-Shortcuts in a call: click a tile to spotlight it, double-click or F11 for full screen, Esc to go back, Ctrl+D to mute, Ctrl+E for the camera. Hover a friend's tile to mute them for yourself; **+** next to the chat box sends a file (up to 64 MB, end to end, never stored).
+Shortcuts in a call: click a tile to spotlight it, double-click or F11 for full screen, Esc to go back, Ctrl+D to mute, Ctrl+E for the camera. Hover a friend's tile to mute them or change their volume for yourself; **+** next to the chat box (or dropping a file on the window) sends a file (up to 64 MB, end to end, never stored).
 
-To test without a second person, `cargo run -p silent-engine --example bot -- <relay url> <code> [file]` joins a room with a beeping microphone and a test-pattern camera, echoes chat and sends the file.
+To test without a second person, `cargo run -p silent-engine --example bot -- <relay url> <code> [file]` joins a room with a beeping microphone and a test-pattern camera, echoes chat and sends the file (`BOT_SCREEN=1` also shares a test-pattern screen).
 
 ## Android
 

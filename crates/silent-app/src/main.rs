@@ -710,8 +710,17 @@ fn send_path(path: std::path::PathBuf, picked_in: u64) {
         };
         let size = data.len();
         let mut sent = None;
-        with_room(|r| sent = Some(r.send_file(&name, data.clone())));
+        // Checked again with the room locked: a room joined meanwhile must not
+        // get it.
+        with_room(|r| {
+            if generation() == picked_in {
+                sent = Some(r.send_file(&name, data.clone()));
+            }
+        });
         let _ = slint::invoke_from_event_loop(move || {
+            if generation() != picked_in {
+                return;
+            }
             ui(|s| match sent {
                 Some(Ok(())) => {
                     s.sent_files += 1;

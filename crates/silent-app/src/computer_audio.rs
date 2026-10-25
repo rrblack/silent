@@ -28,16 +28,18 @@ impl ComputerAudio {
             .name("silent-computer-audio".into())
             .spawn(move || capture(input, stopping, ready_tx))
             .map_err(|e| e.to_string())?;
+        // Windows opens the loopback asynchronously; don't hang the window
+        // if it never answers (the thread then stops by itself).
         let ready = ready_rx
-            .recv()
-            .unwrap_or_else(|_| Err("the capture stopped".into()));
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap_or_else(|_| Err("Windows didn't answer".into()));
         match ready {
             Ok(()) => Ok(Self {
                 stop,
                 thread: Some(thread),
             }),
             Err(reason) => {
-                let _ = thread.join();
+                stop.store(true, Ordering::Relaxed);
                 Err(format!("Couldn't share computer audio: {reason}."))
             }
         }
@@ -100,11 +102,16 @@ fn capture(
     let (client, capture, event) = match open() {
         Ok(opened) => opened,
         Err(e) => {
-            tracing::warn!("computer audio: {e}");
-            let _ = ready.send(Err("this needs Windows 10 (version 2004) or later".into()));
+            let _ = ready.send(Err(format!(
+                "{e} (it needs Windows 10 version 2004 or later)"
+            )));
             return;
         }
     };
+    if stop.load(Ordering::Relaxed) {
+        // Opened only after `start` gave up waiting.
+        return;
+    }
     let _ = ready.send(Ok(()));
 
     let bytes_per_frame = 2 * SCREEN_AUDIO_CHANNELS as usize;
