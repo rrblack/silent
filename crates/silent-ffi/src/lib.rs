@@ -130,6 +130,27 @@ pub enum RoomUpdate {
     },
     RelayLost,
     RelayRestored,
+    /// Who is talking now, yourself included as `me()`.
+    Speaking {
+        peers: Vec<u32>,
+    },
+    FileIncoming {
+        from: u32,
+        id: u32,
+        name: String,
+        size: u64,
+    },
+    /// The whole file, in memory only. Save it only if the user asks.
+    FileReceived {
+        from: u32,
+        id: u32,
+        name: String,
+        data: Vec<u8>,
+    },
+    FileFailed {
+        from: u32,
+        id: u32,
+    },
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -144,6 +165,8 @@ pub enum SilentError {
     TooManyJoins,
     #[error("Couldn't reach the relay: {reason}")]
     Network { reason: String },
+    #[error("Files can be up to 64 MB.")]
+    FileTooLarge,
 }
 
 impl From<RoomError> for SilentError {
@@ -280,6 +303,22 @@ impl SilentRoom {
     /// After turning sharing on, feed frames with `push_screen_frame`.
     pub fn set_screen(&self, on: bool) {
         self.with_room(|r| r.share_screen(on.then_some(ScreenTarget::External)));
+    }
+
+    /// Sends a file to everyone in the room over the encrypted data channels.
+    pub fn send_file(&self, name: String, data: Vec<u8>) -> Result<(), SilentError> {
+        let mut result = Ok(());
+        self.with_room(|r| {
+            result = r
+                .send_file(&name, data)
+                .map_err(|_| SilentError::FileTooLarge)
+        });
+        result
+    }
+
+    /// Silences a friend for this device only.
+    pub fn set_friend_muted(&self, peer: u32, muted: bool) {
+        self.with_room(|r| r.set_friend_muted(peer, muted));
     }
 
     /// Call when the phone switched networks, so calls move over at once.
@@ -437,6 +476,30 @@ fn to_update(event: RoomEvent) -> Option<RoomUpdate> {
         },
         RoomEvent::RelayLost => RoomUpdate::RelayLost,
         RoomEvent::RelayRestored => RoomUpdate::RelayRestored,
+        RoomEvent::Speaking { peers } => RoomUpdate::Speaking { peers },
+        RoomEvent::FileIncoming {
+            from,
+            id,
+            name,
+            size,
+        } => RoomUpdate::FileIncoming {
+            from,
+            id,
+            name,
+            size,
+        },
+        RoomEvent::FileReceived {
+            from,
+            id,
+            name,
+            data,
+        } => RoomUpdate::FileReceived {
+            from,
+            id,
+            name,
+            data,
+        },
+        RoomEvent::FileFailed { from, id } => RoomUpdate::FileFailed { from, id },
         RoomEvent::RemoteVideo { .. } => return None,
     })
 }

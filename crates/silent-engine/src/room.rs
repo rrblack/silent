@@ -24,7 +24,7 @@
 //!   relay ids (see [`Ids`]).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use libwebrtc::peer_connection::PeerConnection;
@@ -32,8 +32,9 @@ use libwebrtc::peer_connection_factory::PeerConnectionFactory;
 use libwebrtc::prelude::*;
 use libwebrtc::video_track::RtcVideoTrack;
 use silent_core::proto::{
-    clean_name, new_session_id, ChannelMsg, ClientMsg, IceConfig, Intent, MediaState, PeerFrame,
-    RelayErrorCode, ServerMsg, Signal, MAX_CHAT_CHARS, PROTOCOL_VERSION,
+    clean_file_name, clean_name, new_session_id, ChannelMsg, ClientMsg, FileFrame, IceConfig,
+    Intent, MediaState, PeerFrame, RelayErrorCode, ServerMsg, Signal, CHAT_CHANNEL, FILE_CHANNEL,
+    FILE_CHUNK, MAX_CHAT_CHARS, MAX_FILE_BYTES, PROTOCOL_VERSION,
 };
 use silent_core::{
     fingerprint_from_sdp, InviteCode, Opener, PairHandshake, PairKeys, PeerId, Sealer,
@@ -58,6 +59,17 @@ const MAX_RESTARTS: u32 = 12;
 /// it is not working, before they count as gone.
 const ORPHAN_GRACE: Duration = Duration::from_secs(10);
 const RELAY_RETRY_MAX: Duration = Duration::from_secs(15);
+/// Unsent bytes a data channel may hold before a file transfer waits.
+const FILE_BUFFER_HIGH: u64 = 4 * 1024 * 1024;
+/// Files one friend may be sending at once.
+const MAX_INCOMING_FILES: usize = 4;
+/// How often audio levels are read for the speaking indicators.
+const LEVELS_EVERY: Duration = Duration::from_millis(250);
+/// Audio level (0..1, linear) above which someone counts as speaking.
+const SPEAKING_LEVEL: f64 = 0.02;
+/// How long someone stays "speaking" after the last loud moment, so the
+/// indicator doesn't flicker between words.
+const SPEAKING_HOLD: Duration = Duration::from_millis(600);
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -123,6 +135,30 @@ pub enum RoomEvent {
         kind: VideoKind,
         message: String,
     },
+    /// Who is talking right now, yourself included as [`Room::me`]. Sent
+    /// whenever the set changes.
+    Speaking {
+        peers: Vec<PeerId>,
+    },
+    /// A friend started sending a file. `id` is theirs, unique per sender.
+    FileIncoming {
+        from: PeerId,
+        id: u32,
+        name: String,
+        size: u64,
+    },
+    /// The whole file arrived. It lives only in this event.
+    FileReceived {
+        from: PeerId,
+        id: u32,
+        name: String,
+        data: Vec<u8>,
+    },
+    /// A transfer stopped before the end (they cancelled or left).
+    FileFailed {
+        from: PeerId,
+        id: u32,
+    },
     /// The relay connection dropped. Calls keep going peer to peer and the
     /// room keeps trying to get back on the relay; until then nobody new can
     /// join.
@@ -136,6 +172,8 @@ enum Command {
     Camera(Option<CameraTarget>),
     Screen(Option<ScreenTarget>),
     Restart,
+    MuteFriend(PeerId, bool),
+    SendFile(String, Arc<[u8]>),
     Stats(oneshot::Sender<Vec<PeerStats>>),
     Leave(oneshot::Sender<()>),
 }
@@ -166,6 +204,10 @@ enum Internal {
     DcClosed {
         peer: PeerId,
     },
+    FileData {
+        peer: PeerId,
+        data: Vec<u8>,
+    },
     CaptureFailed {
         kind: VideoKind,
         message: String,
@@ -179,6 +221,10 @@ enum Internal {
     RelayBack {
         welcome: Welcome,
         link: SignalLink,
+    },
+    Levels {
+        me: Option<f64>,
+        peers: Vec<(PeerId, f64)>,
     },
 }
 
@@ -228,6 +274,7 @@ impl Room {
 
         let actor = Actor {
             code,
+            me: welcome.me,
             relay_url: settings.relay_url.clone(),
             relay_only: settings.relay_only,
             relay_me: welcome.me,
@@ -245,6 +292,10 @@ impl Room {
             peers: HashMap::new(),
             ids: Ids::new(welcome.me),
             relay: Some(link.outbound),
+            loud_at: HashMap::new(),
+            next_file_id: 0,
+            speaking: Vec::new(),
+            levels_pending: false,
             events: ev_tx,
             internal: int_tx,
         };
@@ -305,6 +356,23 @@ impl Room {
         let _ = self.commands.send(Command::Screen(target));
     }
 
+    /// Sends a file to every friend in the call, over the encrypted data
+    /// channels. Fails only when it is larger than [`MAX_FILE_BYTES`].
+    pub fn send_file(&self, name: &str, data: Vec<u8>) -> Result<(), FileTooLarge> {
+        if data.len() as u64 > MAX_FILE_BYTES {
+            return Err(FileTooLarge);
+        }
+        let _ = self
+            .commands
+            .send(Command::SendFile(clean_file_name(name), data.into()));
+        Ok(())
+    }
+
+    /// Silences a friend for you only (they aren't told), or unmutes them.
+    pub fn set_friend_muted(&self, peer: PeerId, muted: bool) {
+        let _ = self.commands.send(Command::MuteFriend(peer, muted));
+    }
+
     /// Restarts ICE on every connection. Call it when the device switched
     /// networks (Wi-Fi to mobile data, say) so calls move over right away
     /// instead of after they time out.
@@ -333,6 +401,10 @@ impl Room {
         }
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("files can be up to {} MB", MAX_FILE_BYTES / 1024 / 1024)]
+pub struct FileTooLarge;
 
 fn rtc_config(ice: &IceConfig, relay_only: bool) -> RtcConfiguration {
     let mut config = RtcConfiguration::default();
@@ -388,6 +460,8 @@ struct Peer {
     rejected: bool,
     pc: Option<PeerConnection>,
     dc: Option<DataChannel>,
+    files: Option<DataChannel>,
+    incoming: HashMap<u32, Incoming>,
     remote_described: bool,
     pending_ice: Vec<(String, i32, String)>,
     remote_fingerprint: Option<String>,
@@ -397,6 +471,8 @@ struct Peer {
     lost: bool,
     restarts: u32,
     recover_generation: u64,
+    remote_audio: Option<RtcAudioTrack>,
+    muted_for_me: bool,
     video_senders: Vec<(VideoKind, RtpSender)>,
 }
 
@@ -445,28 +521,35 @@ impl Drop for Actor {
     }
 }
 
+/// A file on its way in.
+struct Incoming {
+    name: String,
+    size: u64,
+    data: Vec<u8>,
+}
+
 impl Drop for Peer {
     fn drop(&mut self) {
-        retire(self.pc.take(), self.dc.take());
+        retire(self.pc.take(), [self.dc.take(), self.files.take()]);
     }
 }
 
 /// How long a closed connection is kept before its handles are released.
 const RETIRE_AFTER: Duration = Duration::from_secs(10);
 
-type Retired = (Instant, Option<PeerConnection>, Option<DataChannel>);
+type Retired = (Instant, Option<PeerConnection>, [Option<DataChannel>; 2]);
 
 /// Closes a connection and parks its handles for a while instead of dropping
 /// them. libwebrtc can still deliver queued callbacks (ICE state changes)
 /// after `close()`, and webrtc-sys frees the C++ observer as soon as the last
 /// Rust handle goes away, which turns those callbacks into use-after-free
 /// crashes. Seen as intermittent SIGSEGVs whenever a friend leaves.
-fn retire(pc: Option<PeerConnection>, dc: Option<DataChannel>) {
+fn retire(pc: Option<PeerConnection>, dcs: [Option<DataChannel>; 2]) {
     static GRAVEYARD: Mutex<Vec<Retired>> = Mutex::new(Vec::new());
-    if pc.is_none() && dc.is_none() {
+    if pc.is_none() && dcs.iter().all(Option::is_none) {
         return;
     }
-    if let Some(dc) = &dc {
+    for dc in dcs.iter().flatten() {
         dc.on_message(None);
         dc.on_state_change(None);
         dc.close();
@@ -480,13 +563,15 @@ fn retire(pc: Option<PeerConnection>, dc: Option<DataChannel>) {
     let now = Instant::now();
     let mut graveyard = GRAVEYARD.lock().unwrap_or_else(|e| e.into_inner());
     graveyard.retain(|(at, _, _)| now.duration_since(*at) < RETIRE_AFTER);
-    graveyard.push((now, pc, dc));
+    graveyard.push((now, pc, dcs));
 }
 
 struct Actor {
     code: InviteCode,
     relay_url: String,
     relay_only: bool,
+    /// Our id in events (see `Room::me`).
+    me: PeerId,
     /// Our id on the relay. Changes when the relay connection is re-made.
     relay_me: PeerId,
     session: String,
@@ -500,6 +585,12 @@ struct Actor {
     peers: HashMap<PeerId, Peer>,
     ids: Ids,
     relay: Option<mpsc::UnboundedSender<ClientMsg>>,
+    /// When each person was last loud; those within `SPEAKING_HOLD` are
+    /// speaking.
+    loud_at: HashMap<PeerId, Instant>,
+    next_file_id: u32,
+    speaking: Vec<PeerId>,
+    levels_pending: bool,
     events: mpsc::UnboundedSender<RoomEvent>,
     internal: mpsc::UnboundedSender<Internal>,
 }
@@ -516,8 +607,11 @@ impl Actor {
             self.begin_pair(peer);
         }
         let mut relay_open = true;
+        let mut levels = tokio::time::interval(LEVELS_EVERY);
+        levels.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
+                _ = levels.tick() => self.read_levels(),
                 msg = relay_in.recv(), if relay_open => match msg {
                     Some(msg) => self.on_relay(msg).await,
                     None => {
@@ -767,7 +861,7 @@ impl Actor {
     fn reject(&mut self, peer: PeerId) {
         if let Some(p) = self.peers.get_mut(&peer) {
             p.rejected = true;
-            retire(p.pc.take(), p.dc.take());
+            retire(p.pc.take(), [p.dc.take(), p.files.take()]);
         }
         self.emit(RoomEvent::PeerWrongCode { peer });
     }
@@ -801,10 +895,17 @@ impl Actor {
                     .iter()
                     .find(|(&id, p)| id != from && p.session.as_deref() == Some(session.as_str()))
                     .map(|(&id, _)| id);
-                if let Some(old) = replaces {
+                if let Some(old) = replaces.and_then(|old| self.peers.remove(&old)) {
+                    self.fail_incoming(replaces.expect("replaced"), &old);
                     // Retired by `Peer`'s drop.
-                    if let Some(relay_id) = self.peers.remove(&old).and_then(|p| p.relay_id) {
+                    if let Some(relay_id) = old.relay_id {
                         self.ids.forget(relay_id);
+                    }
+                    if let Some(p) = self.peers.get_mut(&from) {
+                        p.muted_for_me = old.muted_for_me;
+                        if let Some(audio) = &p.remote_audio {
+                            audio.set_enabled(!p.muted_for_me);
+                        }
                     }
                 }
                 self.emit(RoomEvent::PeerVerified {
@@ -982,11 +1083,27 @@ impl Actor {
             "silent",
             DataChannelInit {
                 negotiated: true,
-                id: 0,
+                id: CHAT_CHANNEL.into(),
                 ordered: true,
                 ..Default::default()
             },
         )?;
+        let files = pc.create_data_channel(
+            "silent-files",
+            DataChannelInit {
+                negotiated: true,
+                id: FILE_CHANNEL.into(),
+                ordered: true,
+                ..Default::default()
+            },
+        )?;
+        let tx = self.internal.clone();
+        files.on_message(Some(Box::new(move |buf: DataBuffer| {
+            let _ = tx.send(Internal::FileData {
+                peer,
+                data: buf.data.to_vec(),
+            });
+        })));
         let tx = self.internal.clone();
         dc.on_state_change(Some(Box::new(move |state| {
             let _ = match state {
@@ -1010,6 +1127,7 @@ impl Actor {
         let p = self.peers.get_mut(&peer).expect("peer exists");
         p.pc = Some(pc);
         p.dc = Some(dc);
+        p.files = Some(files);
         Ok(())
     }
 
@@ -1114,7 +1232,117 @@ impl Actor {
         if let Some(relay_id) = p.relay_id {
             self.ids.forget(relay_id);
         }
+        self.fail_incoming(peer, &p);
         self.emit(RoomEvent::PeerLeft { peer });
+    }
+
+    fn fail_incoming(&self, peer: PeerId, p: &Peer) {
+        for &id in p.incoming.keys() {
+            self.emit(RoomEvent::FileFailed { from: peer, id });
+        }
+    }
+
+    fn on_file_frame(&mut self, peer: PeerId, data: &[u8]) {
+        let Some(p) = self.peers.get_mut(&peer).filter(|p| p.verified) else {
+            return;
+        };
+        let event = match FileFrame::decode(data) {
+            Ok(FileFrame::Start { id, name, size }) => {
+                let fits = size <= MAX_FILE_BYTES
+                    && p.incoming.len() < MAX_INCOMING_FILES
+                    && !p.incoming.contains_key(&id);
+                if !fits {
+                    tracing::debug!(peer, "ignoring a file offer over the limits");
+                    return;
+                }
+                p.incoming.insert(
+                    id,
+                    Incoming {
+                        name: name.clone(),
+                        size,
+                        data: Vec::with_capacity(size.min(FILE_BUFFER_HIGH) as usize),
+                    },
+                );
+                self.emit(RoomEvent::FileIncoming {
+                    from: peer,
+                    id,
+                    name,
+                    size,
+                });
+                self.finish_file(peer, id)
+            }
+            Ok(FileFrame::Chunk { id, data }) => {
+                let Some(file) = p.incoming.get_mut(&id) else {
+                    return;
+                };
+                if (file.data.len() + data.len()) as u64 > file.size {
+                    p.incoming.remove(&id);
+                    Some(RoomEvent::FileFailed { from: peer, id })
+                } else {
+                    file.data.extend_from_slice(&data);
+                    self.finish_file(peer, id)
+                }
+            }
+            Ok(FileFrame::Cancel { id }) => p
+                .incoming
+                .remove(&id)
+                .map(|_| RoomEvent::FileFailed { from: peer, id }),
+            Err(_) => None,
+        };
+        if let Some(event) = event {
+            self.emit(event);
+        }
+    }
+
+    /// Hands over a file once all of it is here.
+    fn finish_file(&mut self, peer: PeerId, id: u32) -> Option<RoomEvent> {
+        let p = self.peers.get_mut(&peer)?;
+        if p.incoming.get(&id)?.data.len() as u64 != p.incoming.get(&id)?.size {
+            return None;
+        }
+        let file = p.incoming.remove(&id)?;
+        Some(RoomEvent::FileReceived {
+            from: peer,
+            id,
+            name: file.name,
+            data: file.data,
+        })
+    }
+
+    /// Sends a file to every verified friend, each over their own channel and
+    /// at the pace their connection takes.
+    fn send_file(&mut self, name: String, data: Arc<[u8]>) {
+        let id = self.next_file_id;
+        self.next_file_id = self.next_file_id.wrapping_add(1);
+        for p in self.peers.values().filter(|p| p.verified) {
+            let Some(dc) = p.files.clone() else { continue };
+            let (name, data) = (name.clone(), data.clone());
+            tokio::spawn(async move {
+                let start = FileFrame::Start {
+                    id,
+                    name,
+                    size: data.len() as u64,
+                };
+                if dc.send(&start.encode(), true).is_err() {
+                    return;
+                }
+                for chunk in data.chunks(FILE_CHUNK) {
+                    while dc.buffered_amount() > FILE_BUFFER_HIGH {
+                        if dc.state() != DataChannelState::Open {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    let frame = FileFrame::Chunk {
+                        id,
+                        data: chunk.to_vec(),
+                    };
+                    if dc.send(&frame.encode(), true).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
     }
 
     async fn on_internal(&mut self, ev: Internal) {
@@ -1135,18 +1363,28 @@ impl Actor {
                 );
             }
             Internal::PcState { peer, state } => self.on_pc_state(peer, state),
-            Internal::Track { peer, kind, track } => {
-                if let (Some(kind), MediaStreamTrack::Video(track)) = (kind, track) {
-                    if self.peers.get(&peer).is_some_and(|p| p.verified) {
-                        self.emit(RoomEvent::RemoteVideo { peer, kind, track });
+            Internal::Track { peer, kind, track } => match track {
+                MediaStreamTrack::Video(track) => {
+                    if let Some(kind) = kind {
+                        if self.peers.get(&peer).is_some_and(|p| p.verified) {
+                            self.emit(RoomEvent::RemoteVideo { peer, kind, track });
+                        }
                     }
                 }
-            }
+                MediaStreamTrack::Audio(track) => {
+                    if let Some(p) = self.peers.get_mut(&peer) {
+                        track.set_enabled(!p.muted_for_me);
+                        p.remote_audio = Some(track);
+                    }
+                }
+            },
+            Internal::Levels { me, peers } => self.on_levels(me, peers),
             Internal::DcOpen { peer } => {
                 let state = self.media_state;
                 self.send_channel(peer, &ChannelMsg::Media(state));
             }
             Internal::DcMessage { peer, data } => self.on_channel(peer, &data),
+            Internal::FileData { peer, data } => self.on_file_frame(peer, &data),
             Internal::DcClosed { peer } => {
                 // An orphan's data channel closing means they hung up.
                 if self.peers.get(&peer).is_some_and(|p| p.relay_id.is_none()) {
@@ -1257,6 +1495,74 @@ impl Actor {
         self.schedule_recover(peer, RESTART_EVERY);
     }
 
+    /// Reads audio levels off the connections in the background; the result
+    /// comes back as `Internal::Levels`.
+    fn read_levels(&mut self) {
+        if self.levels_pending {
+            return;
+        }
+        let pcs: Vec<(PeerId, PeerConnection)> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.announced_connected && !p.lost)
+            .filter_map(|(&id, p)| Some((id, p.pc.clone()?)))
+            .collect();
+        if pcs.is_empty() {
+            if !self.speaking.is_empty() {
+                self.on_levels(None, Vec::new());
+            }
+            return;
+        }
+        self.levels_pending = true;
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            let mut me = None;
+            let mut peers = Vec::with_capacity(pcs.len());
+            for (id, pc) in pcs {
+                let levels = stats::audio_levels(&pc).await;
+                me = me.or(levels.sent);
+                if let Some(level) = levels.received {
+                    peers.push((id, level));
+                }
+            }
+            let _ = internal.send(Internal::Levels { me, peers });
+        });
+    }
+
+    fn on_levels(&mut self, me: Option<f64>, peers: Vec<(PeerId, f64)>) {
+        self.levels_pending = false;
+        let now = Instant::now();
+        let mic_on = self.media_state.mic;
+        let heard = me
+            .filter(|_| mic_on)
+            .map(|level| (self.me, level))
+            .into_iter()
+            .chain(peers.into_iter().filter(|(id, _)| {
+                self.peers
+                    .get(id)
+                    .is_some_and(|p| p.verified && !p.muted_for_me)
+            }));
+        for (id, level) in heard {
+            if level >= SPEAKING_LEVEL {
+                self.loud_at.insert(id, now);
+            }
+        }
+        let me = self.me;
+        let peers = &self.peers;
+        self.loud_at.retain(|id, at| {
+            now.duration_since(*at) < SPEAKING_HOLD && (*id == me || peers.contains_key(id))
+        });
+        if !mic_on {
+            self.loud_at.remove(&me);
+        }
+        let mut speaking: Vec<PeerId> = self.loud_at.keys().copied().collect();
+        speaking.sort_unstable();
+        if speaking != self.speaking {
+            self.speaking = speaking.clone();
+            self.emit(RoomEvent::Speaking { peers: speaking });
+        }
+    }
+
     fn send_channel(&self, peer: PeerId, msg: &ChannelMsg) {
         let Some(dc) = self.peers.get(&peer).and_then(|p| p.dc.as_ref()) else {
             return;
@@ -1302,6 +1608,15 @@ impl Actor {
 
     async fn on_command(&mut self, cmd: Command) {
         match cmd {
+            Command::SendFile(name, data) => self.send_file(name, data),
+            Command::MuteFriend(peer, muted) => {
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    p.muted_for_me = muted;
+                    if let Some(audio) = &p.remote_audio {
+                        audio.set_enabled(!muted);
+                    }
+                }
+            }
             Command::Restart => {
                 let peers: Vec<PeerId> = self
                     .peers

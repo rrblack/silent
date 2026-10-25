@@ -12,14 +12,26 @@ struct Friend: Identifiable {
     var camera = false
     var screen = false
     var words: String?
+    var mutedForMe = false
 }
 
 struct ChatLine: Identifiable {
     let id = UUID()
     let who: String
-    let text: String
+    var text: String
     var mine = false
     var system = false
+    /// Set for a file line; the key to save it with.
+    var file: String?
+    var fileReady = false
+    var image: UIImage?
+}
+
+/// Files can be up to this big (the engine's limit).
+let maxFileBytes = 64 * 1024 * 1024
+
+func sizeText(_ bytes: Int) -> String {
+    ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
 }
 
 struct TileKey: Hashable {
@@ -51,8 +63,14 @@ final class RoomModel: ObservableObject {
     @Published private(set) var chat: [ChatLine] = []
     @Published private(set) var frames: [TileKey: UIImage] = [:]
     @Published private(set) var stats: [String] = []
+    /// Who is talking now; includes `me` for yourself.
+    @Published private(set) var speaking: Set<UInt32> = []
+    private(set) var me: UInt32 = 0
 
     let camera = CameraFeed()
+    /// Received files, in memory only, until the room is left.
+    private(set) var files: [String: (name: String, data: Data)] = [:]
+    private var sentFiles = 0
     private lazy var listener = Listener(model: self)
     private var network: NWPathMonitor?
     private var interface: NWInterface.InterfaceType?
@@ -108,12 +126,15 @@ final class RoomModel: ObservableObject {
         self.room = room
         self.created = created
         code = room.code()
+        me = room.me()
+        speaking = []
         micOn = true
         cameraOn = false
         notice = ""
         friends = [:]
         chat = []
         frames = [:]
+        files = [:]
         camera.attach(room)
         startAudioSession()
         watchNetwork()
@@ -152,6 +173,48 @@ final class RoomModel: ObservableObject {
         } else {
             camera.stop()
         }
+    }
+
+    private func updateFileLine(_ key: String, _ change: (inout ChatLine) -> Void) {
+        guard let i = chat.lastIndex(where: { $0.file == key }) else { return }
+        change(&chat[i])
+    }
+
+    /// Sends a file the user picked.
+    func sendFile(at url: URL) {
+        guard let room else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= maxFileBytes, let data = try? Data(contentsOf: url) else {
+            system("\(url.lastPathComponent) can't be sent: files can be up to 64 MB.")
+            return
+        }
+        do {
+            try room.sendFile(name: url.lastPathComponent, data: data)
+        } catch {
+            system("Couldn't send \(url.lastPathComponent): \(error.localizedDescription)")
+            return
+        }
+        sentFiles += 1
+        chat.append(ChatLine(
+            who: name.isEmpty ? "Me" : name,
+            text: "File: \(url.lastPathComponent) (\(sizeText(data.count)))",
+            mine: true, file: "me:\(sentFiles)", fileReady: true,
+            image: UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 440, height: 440))
+        ))
+    }
+
+    func note(_ text: String) {
+        system(text)
+    }
+
+    /// Silences a friend for this phone only.
+    func toggleMute(friend peer: UInt32) {
+        guard var friend = friends[peer] else { return }
+        friend.mutedForMe.toggle()
+        friends[peer] = friend
+        room?.setFriendMuted(peer: peer, muted: friend.mutedForMe)
     }
 
     func flipCamera() {
@@ -197,8 +260,11 @@ final class RoomModel: ObservableObject {
             friends[peer] = Friend(id: peer)
         case .peerVerified(let peer, let name, let replaces):
             var returning = false
+            if let old = replaces, let previous = friends.removeValue(forKey: old) {
+                returning = true
+                friends[peer]?.mutedForMe = previous.mutedForMe
+            }
             if let old = replaces {
-                returning = friends.removeValue(forKey: old) != nil
                 frames[TileKey(peer: old, screen: false)] = nil
                 frames[TileKey(peer: old, screen: true)] = nil
             }
@@ -238,6 +304,26 @@ final class RoomModel: ObservableObject {
             notice = "Relay offline: the call continues, reconnecting…"
         case .relayRestored:
             if notice.hasPrefix("Relay") { notice = "" }
+        case .speaking(let peers):
+            speaking = Set(peers)
+        case .fileIncoming(let from, let id, let name, let size):
+            chat.append(ChatLine(
+                who: friends[from]?.name ?? "Friend",
+                text: "File: \(name) (\(sizeText(Int(size)))) · receiving…",
+                file: "\(from):\(id)"
+            ))
+        case .fileReceived(let from, let id, let name, let data):
+            let key = "\(from):\(id)"
+            files[key] = (name, data)
+            updateFileLine(key) { line in
+                line.text = "File: \(name) (\(sizeText(data.count)))"
+                line.fileReady = true
+                line.image = UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 440, height: 440))
+            }
+        case .fileFailed(let from, let id):
+            updateFileLine("\(from):\(id)") { line in
+                line.text = line.text.replacingOccurrences(of: " · receiving…", with: "") + " · didn't arrive"
+            }
         }
     }
 

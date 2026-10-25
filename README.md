@@ -50,12 +50,14 @@ The first window hosts a local relay on 127.0.0.1:8787 if nothing else is servin
 | Environment variable | Effect |
 |---|---|
 | `SILENT_RELAY_URL` | Relay to use (also shown under Settings). Set at build time to change the default. |
-| `SILENT_TEST_PATTERN=1` | Camera button sends a moving test pattern instead of the webcam. |
+| `SILENT_TEST_PATTERN=1` | Camera button sends a moving test pattern instead of the webcam; with `SILENT_NO_AUDIO=1`, the microphone sends a test beep. |
 | `SILENT_NO_AUDIO=1` | Don't open audio devices; send silence. |
 | `SILENT_LOG=debug` | Verbose logs to stderr (nothing is written to disk). |
 | `SILENT_VIDEO_CODEC=h264` or `vp8` | Override the video codec choice (H.264 when a hardware encoder is found, else VP8). |
 
-Shortcuts in a call: click a tile to spotlight it, double-click or F11 for full screen, Esc to go back, Ctrl+D to mute, Ctrl+E for the camera.
+Shortcuts in a call: click a tile to spotlight it, double-click or F11 for full screen, Esc to go back, Ctrl+D to mute, Ctrl+E for the camera. Hover a friend's tile to mute them for yourself; **+** next to the chat box sends a file (up to 64 MB, end to end, never stored).
+
+To test without a second person, `cargo run -p silent-engine --example bot -- <relay url> <code> [file]` joins a room with a beeping microphone and a test-pattern camera, echoes chat and sends the file.
 
 ## Android
 

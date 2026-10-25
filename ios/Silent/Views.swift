@@ -1,4 +1,23 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// A received file handed to the save dialog. Never written anywhere else.
+struct FileBlob: FileDocument {
+    static var readableContentTypes: [UTType] { [.data] }
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration _: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
 
 struct HomeView: View {
     @ObservedObject var model: RoomModel
@@ -68,6 +87,8 @@ struct RoomView: View {
     @State private var showVerify = false
     @State private var showStats = false
     @State private var draft = ""
+    @State private var picking = false
+    @State private var saving: (name: String, blob: FileBlob)?
 
     private enum Tile: Identifiable {
         case me
@@ -158,13 +179,32 @@ struct RoomView: View {
                     avatar(friend.name, status: friend.status)
                 }
                 label(
-                    (friend.mic || screen ? "" : "muted · ") + friend.name + (screen ? "'s screen" : ""),
+                    (friend.mic || screen ? "" : "muted · ") + friend.name + (screen ? "'s screen" : "")
+                        + (friend.mutedForMe && !screen ? " · muted for you" : ""),
                     muted: !friend.mic && !screen
                 )
             }
         }
         .aspectRatio(3 / 4, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isSpeaking(tile) ? Palette.ok : Color.clear, lineWidth: 3)
+        )
+        .contextMenu {
+            if case .friend(let friend, false) = tile {
+                Button(friend.mutedForMe ? "Unmute for me" : "Mute for me") {
+                    model.toggleMute(friend: friend.id)
+                }
+            }
+        }
+    }
+
+    private func isSpeaking(_ tile: Tile) -> Bool {
+        switch tile {
+        case .me: return model.speaking.contains(model.me)
+        case .friend(let friend, let screen): return !screen && model.speaking.contains(friend.id)
+        }
     }
 
     private func avatar(_ name: String, status: String) -> some View {
@@ -206,6 +246,14 @@ struct RoomView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(line.who).font(.caption.bold()).foregroundColor(line.mine ? Palette.accent : Palette.text)
                                 Text(line.text).foregroundColor(Palette.text)
+                                if let image = line.image {
+                                    Image(uiImage: image).resizable().scaledToFit()
+                                        .frame(maxWidth: 220, maxHeight: 220).clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                if let key = line.file, line.fileReady, !line.mine, let file = model.files[key] {
+                                    Button("Save…") { saving = (file.name, FileBlob(data: file.data)) }
+                                        .font(.footnote)
+                                }
                             }
                         }
                     }
@@ -213,6 +261,7 @@ struct RoomView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {
+                Button { picking = true } label: { Image(systemName: "paperclip") }
                 TextField("Message", text: $draft)
                     .padding(10).background(Palette.card).clipShape(RoundedRectangle(cornerRadius: 10))
                     .onSubmit(sendDraft)
@@ -220,6 +269,17 @@ struct RoomView: View {
             }
         }
         .padding(16)
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.item]) { result in
+            if case .success(let url) = result { model.sendFile(at: url) }
+        }
+        .fileExporter(
+            isPresented: Binding(get: { saving != nil }, set: { if !$0 { saving = nil } }),
+            document: saving?.blob,
+            contentType: .data,
+            defaultFilename: saving?.name
+        ) { result in
+            if case .success(let url) = result { model.note("Saved \(url.lastPathComponent).") }
+        }
         .background(Palette.panel.ignoresSafeArea())
         .tint(Palette.accent)
     }

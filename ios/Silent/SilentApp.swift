@@ -27,4 +27,5 @@ enum Palette {
     static let accent = Color(red: 0xE1 / 255, green: 0x1D / 255, blue: 0x2E / 255)
     static let accentDim = Color(red: 0x4A / 255, green: 0x0F / 255, blue: 0x16 / 255)
     static let danger = Color(red: 0x9B / 255, green: 0x11 / 255, blue: 0x1E / 255)
+    static let ok = Color(red: 0x3F / 255, green: 0xB6 / 255, blue: 0x7A / 255)
 }

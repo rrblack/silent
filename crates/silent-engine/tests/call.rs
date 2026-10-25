@@ -596,3 +596,118 @@ async fn h264_is_negotiated_when_preferred() {
     let received = bob.room.stats().await;
     assert!(received[0].receiving.iter().any(|v| v.codec == "H264"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn speaking_is_detected_and_friends_can_be_muted() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut beeping = settings(&relay, "Alice");
+    beeping.audio = AudioInput::TestTone;
+    let mut alice = Member::new(engine.create_room(beeping).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+    let alice_id = alice.room.me();
+
+    let speaking = |who: PeerId| {
+        move |e: &RoomEvent| match e {
+            RoomEvent::Speaking { peers } if peers.contains(&who) => Some(()),
+            _ => None,
+        }
+    };
+    bob.until(speaking(alice_id)).await;
+    alice.until(speaking(alice_id)).await;
+
+    // Muted for Bob, Alice no longer shows as speaking to him.
+    bob.room.set_friend_muted(alice_id, true);
+    bob.until(|e| match e {
+        RoomEvent::Speaking { peers } if peers.is_empty() => Some(()),
+        _ => None,
+    })
+    .await;
+    let quiet = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(RoomEvent::Speaking { peers }) = bob.events.recv().await {
+                if peers.contains(&alice_id) {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "a muted friend must not show as speaking");
+
+    // Alice mutes her mic: she stops showing as speaking to herself too.
+    alice.room.set_mic(false);
+    alice
+        .until(|e| match e {
+            RoomEvent::Speaking { peers } if !peers.contains(&alice_id) => Some(()),
+            _ => None,
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn files_arrive_whole_and_chat_keeps_flowing() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut alice = Member::new(engine.create_room(settings(&relay, "Alice")).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+    bob.until(|e| matches!(e, RoomEvent::PeerMedia { .. }).then_some(()))
+        .await;
+
+    let big: Vec<u8> = (0..3 * 1024 * 1024 + 17)
+        .map(|i: u32| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    alice.room.send_file("../holiday.bin", big.clone()).unwrap();
+    alice.room.send_file("empty.txt", Vec::new()).unwrap();
+    // Chat has its own channel, so it is not stuck behind the file.
+    alice.room.send_chat("sent you a file");
+
+    let mut chat_seen = false;
+    let mut files = HashMap::new();
+    let started = Instant::now();
+    while files.len() < 2 {
+        let event = bob
+            .until(|e| match e {
+                RoomEvent::FileReceived { name, data, .. } => {
+                    Some(Some((name.clone(), data.clone())))
+                }
+                RoomEvent::Chat { text, .. } if text == "sent you a file" => Some(None),
+                RoomEvent::FileFailed { .. } => panic!("transfer failed"),
+                _ => None,
+            })
+            .await;
+        match event {
+            Some((name, data)) => {
+                files.insert(name, data);
+            }
+            None => chat_seen = files.is_empty(),
+        }
+    }
+    println!("3 MiB arrived in {:?}", started.elapsed());
+    assert!(chat_seen, "chat should arrive before the big file finishes");
+    assert_eq!(files["holiday.bin"], big, "file content must match");
+    assert!(files["empty.txt"].is_empty());
+
+    let too_big = vec![0u8; silent_core::proto::MAX_FILE_BYTES as usize + 1];
+    assert!(alice.room.send_file("huge", too_big).is_err());
+}

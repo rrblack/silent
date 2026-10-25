@@ -65,7 +65,8 @@ The signaling carried this way covers display names, session ids, codec wishes (
 WebRTC's DTLS uses the certificate fingerprints from the sealed SDP, so the DTLS handshake is authenticated end to end:
 
 - **Media:** DTLS-SRTP with ephemeral ECDHE keys, which gives forward secrecy.
-- **Chat and media state:** a DTLS data channel.
+- **Chat and media state:** a DTLS data channel (negotiated id 0).
+- **Files:** a second DTLS data channel (id 1), so a transfer never holds up chat. A file is a `Start` frame (name, size) followed by chunks, on an ordered, reliable channel. Receivers accept at most 64 MiB per file and 4 transfers per friend at a time, strip directories and control characters from names, and keep files in memory only; nothing is written to disk unless the user saves a file somewhere.
 
 ### Reconnecting
 

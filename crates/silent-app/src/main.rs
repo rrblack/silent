@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod files;
 mod video;
 
 use std::cell::RefCell;
@@ -86,6 +87,7 @@ struct PeerView {
     media: MediaState,
     words: Option<String>,
     verified: bool,
+    muted_for_me: bool,
 }
 
 /// Everything that lives on the UI thread.
@@ -105,6 +107,10 @@ struct UiState {
     /// Friends' screen shares already on screen, so only new ones take the
     /// spotlight by themselves.
     screens_seen: HashSet<String>,
+    speaking: HashSet<PeerId>,
+    /// Received files, by chat line key, until the room is left.
+    files: HashMap<String, (String, Vec<u8>)>,
+    sent_files: u32,
 }
 
 thread_local! {
@@ -267,6 +273,8 @@ impl UiState {
             mic,
             status: status.into(),
             is_me: peer == self.me,
+            speaking: kind == VideoKind::Camera && self.speaking.contains(&peer),
+            muted_for_me: self.peers.get(&peer).is_some_and(|p| p.muted_for_me),
         }
     }
 
@@ -361,6 +369,42 @@ impl UiState {
         });
     }
 
+    /// Updates the chat line of file `key`.
+    fn file_line(&self, key: &str, update: impl FnOnce(&mut ChatLine)) {
+        for i in (0..self.chat.row_count()).rev() {
+            if let Some(mut line) = self.chat.row_data(i) {
+                if line.file == key {
+                    update(&mut line);
+                    self.chat.set_row_data(i, line);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Decodes an image preview off the UI thread and shows it on line `key`.
+    fn show_preview(&self, key: String, data: Vec<u8>) {
+        backend().rt.spawn_blocking(move || {
+            if let Some(pixels) = files::preview(&data) {
+                let _ = slint::invoke_from_event_loop(move || {
+                    ui(|s| {
+                        s.file_line(&key, |line| {
+                            line.image = Image::from_rgba8(pixels);
+                            line.has_image = true;
+                        })
+                    })
+                });
+            }
+        });
+    }
+
+    fn friend_name(&self, peer: PeerId) -> String {
+        self.peers
+            .get(&peer)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Friend".into())
+    }
+
     fn apply(&mut self, event: RoomEvent) {
         match event {
             RoomEvent::PeerJoining { peer } => {
@@ -370,6 +414,7 @@ impl UiState {
                     media: MediaState::default(),
                     words: None,
                     verified: false,
+                    muted_for_me: false,
                 };
                 self.peers.insert(peer, view);
             }
@@ -390,6 +435,8 @@ impl UiState {
                     p.name = name;
                     p.status = "Securing connection…";
                     p.verified = true;
+                    // The engine keeps a friend muted across a reconnect.
+                    p.muted_for_me = returning.is_some_and(|old| old.muted_for_me);
                 }
             }
             RoomEvent::PeerWrongCode { peer } => {
@@ -438,12 +485,49 @@ impl UiState {
                     self.frames.remove(&tile_key(peer, VideoKind::Screen));
                 }
             }
+            RoomEvent::FileIncoming {
+                from,
+                id,
+                name,
+                size,
+            } => {
+                self.chat.push(ChatLine {
+                    who: self.friend_name(from).into(),
+                    text: format!(
+                        "File: {name} ({}) · receiving…",
+                        files::size_text(size as usize)
+                    )
+                    .into(),
+                    file: format!("{from}:{id}").into(),
+                    ..Default::default()
+                });
+            }
+            RoomEvent::FileReceived {
+                from,
+                id,
+                name,
+                data,
+            } => {
+                let key = format!("{from}:{id}");
+                let text = format!("File: {name} ({})", files::size_text(data.len()));
+                self.file_line(&key, |line| {
+                    line.text = text.into();
+                    line.file_ready = true;
+                });
+                self.show_preview(key.clone(), data.clone());
+                self.files.insert(key, (name, data));
+            }
+            RoomEvent::FileFailed { from, id } => {
+                self.file_line(&format!("{from}:{id}"), |line| {
+                    line.text = format!(
+                        "{} · didn't arrive",
+                        line.text.trim_end_matches(" · receiving…")
+                    )
+                    .into();
+                });
+            }
             RoomEvent::Chat { from, text, .. } => {
-                let who = self
-                    .peers
-                    .get(&from)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| "Friend".into());
+                let who = self.friend_name(from);
                 self.chat.push(ChatLine {
                     who: who.into(),
                     text: text.into(),
@@ -463,6 +547,9 @@ impl UiState {
                     w.set_notice("Relay offline: the call continues, reconnecting…".into());
                 }
             }
+            RoomEvent::Speaking { peers } => {
+                self.speaking = peers.into_iter().collect();
+            }
             RoomEvent::RelayRestored => {
                 if let Some(w) = self
                     .window()
@@ -480,10 +567,13 @@ fn settings_from(w: &AppWindow) -> Settings {
     Settings {
         relay_url: w.get_relay_url().trim().to_string(),
         name: w.get_name().to_string(),
-        audio: if std::env::var_os("SILENT_NO_AUDIO").is_some() {
-            AudioInput::Silent
-        } else {
-            AudioInput::Platform
+        audio: match (
+            std::env::var_os("SILENT_NO_AUDIO").is_some(),
+            test_patterns(),
+        ) {
+            (true, true) => AudioInput::TestTone,
+            (true, false) => AudioInput::Silent,
+            (false, _) => AudioInput::Platform,
         },
         camera: if w.get_camera_quality() == 1 {
             CameraProfile::High
@@ -560,6 +650,9 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 frames: HashMap::new(),
                 focus: None,
                 screens_seen: HashSet::new(),
+                speaking: HashSet::new(),
+                files: HashMap::new(),
+                sent_files: 0,
             };
             w.set_tiles(ModelRc::from(state.tiles.clone()));
             w.set_chat(ModelRc::from(state.chat.clone()));
@@ -848,6 +941,20 @@ fn main() -> anyhow::Result<()> {
         })
     });
 
+    window.on_mute_friend(|key| {
+        let Some(peer) = key.split(':').next().and_then(|p| p.parse::<PeerId>().ok()) else {
+            return;
+        };
+        ui(|s| {
+            if let Some(p) = s.peers.get_mut(&peer) {
+                p.muted_for_me = !p.muted_for_me;
+                let muted = p.muted_for_me;
+                with_room(|r| r.set_friend_muted(peer, muted));
+            }
+            s.rebuild();
+        })
+    });
+
     window.on_unfocus_tile(|| {
         ui(|s| {
             s.focus = None;
@@ -889,6 +996,56 @@ fn main() -> anyhow::Result<()> {
             });
         });
         w.set_draft("".into());
+    });
+
+    window.on_send_file(|| {
+        backend().rt.spawn(async {
+            let Some((name, data)) = files::pick().await else {
+                return;
+            };
+            let size = data.len();
+            let mut sent = None;
+            with_room(|r| sent = Some(r.send_file(&name, data.clone())));
+            let _ = slint::invoke_from_event_loop(move || {
+                ui(|s| match sent {
+                    Some(Ok(())) => {
+                        s.sent_files += 1;
+                        let key = format!("me:{}", s.sent_files);
+                        s.chat.push(ChatLine {
+                            who: s.my_name.as_str().into(),
+                            text: format!("File: {name} ({})", files::size_text(size)).into(),
+                            mine: true,
+                            file: key.as_str().into(),
+                            file_ready: true,
+                            ..Default::default()
+                        });
+                        s.show_preview(key, data);
+                    }
+                    Some(Err(e)) => s.system(format!("Couldn't send {name}: {e}.")),
+                    None => {}
+                })
+            });
+        });
+    });
+
+    window.on_save_file(|key| {
+        let Some((name, data)) = UI.with(|c| {
+            c.borrow()
+                .as_ref()
+                .and_then(|s| s.files.get(key.as_str()).cloned())
+        }) else {
+            return;
+        };
+        backend().rt.spawn(async move {
+            let result = files::save(name.clone(), data).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                ui(|s| match result {
+                    Ok(true) => s.system(format!("Saved {name}.")),
+                    Ok(false) => {}
+                    Err(e) => s.system(format!("Couldn't save {name}: {e}.")),
+                })
+            });
+        });
     });
 
     let weak = window.as_weak();

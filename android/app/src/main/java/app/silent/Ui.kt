@@ -3,7 +3,9 @@ package app.silent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +33,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Chat
@@ -88,6 +91,7 @@ object Palette {
     val accent = Color(0xFFE11D2E)
     val accentDim = Color(0xFF4A0F16)
     val danger = Color(0xFF9B111E)
+    val ok = Color(0xFF3FB67A)
 }
 
 @Composable
@@ -211,7 +215,14 @@ private sealed interface TileModel {
 }
 
 @Composable
-fun RoomScreen(vm: RoomViewModel, camera: CameraFeed, onShareScreen: () -> Unit, onStopScreen: () -> Unit) {
+fun RoomScreen(
+    vm: RoomViewModel,
+    camera: CameraFeed,
+    onShareScreen: () -> Unit,
+    onStopScreen: () -> Unit,
+    onAttach: () -> Unit,
+    onSaveFile: (String) -> Unit,
+) {
     var showChat by remember { mutableStateOf(false) }
     var showVerify by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
@@ -242,7 +253,7 @@ fun RoomScreen(vm: RoomViewModel, camera: CameraFeed, onShareScreen: () -> Unit,
         }
 
         if (showChat) {
-            ChatPanel(vm, Modifier.weight(1f))
+            ChatPanel(vm, Modifier.weight(1f), onAttach, onSaveFile)
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(if (tiles.size == 1) 1 else 2),
@@ -319,16 +330,34 @@ fun RoomScreen(vm: RoomViewModel, camera: CameraFeed, onShareScreen: () -> Unit,
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
     val screen = tile is TileModel.Remote && tile.screen
+    val speaking = !screen && when (tile) {
+        is TileModel.Me -> vm.me in vm.speaking
+        is TileModel.Remote -> tile.friend.id in vm.speaking
+    }
+    val friend = (tile as? TileModel.Remote)?.friend?.takeIf { !screen }
     Box(
         Modifier
             .fillMaxWidth()
             .aspectRatio(if (screen) 16f / 9f else 3f / 4f)
             .clip(RoundedCornerShape(12.dp))
             .background(Palette.card)
-            .border(1.dp, Palette.border, RoundedCornerShape(12.dp)),
+            .border(
+                if (speaking) 3.dp else 1.dp,
+                if (speaking) Palette.ok else Palette.border,
+                RoundedCornerShape(12.dp),
+            )
+            .then(
+                // Long press silences a friend for you only.
+                if (friend != null) {
+                    Modifier.combinedClickable(onClick = {}, onLongClick = { vm.toggleMuteFriend(friend.id) })
+                } else {
+                    Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         val label: String
@@ -349,7 +378,9 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
             }
             is TileModel.Remote -> {
                 val f = tile.friend
-                label = f.name + (if (tile.screen) "'s screen" else "") + if (!tile.screen && !f.mic) " · muted" else ""
+                label = f.name + (if (tile.screen) "'s screen" else "") +
+                    (if (!tile.screen && !f.mic) " · muted" else "") +
+                    (if (!tile.screen && f.mutedForMe) " · muted for you" else "")
                 val image = vm.slot(TileKey(f.id, tile.screen)).image.value
                 val showing = if (tile.screen) f.screen else f.camera
                 if (showing && image != null) {
@@ -401,7 +432,7 @@ private fun ControlButton(icon: ImageVector, active: Boolean, danger: Boolean = 
 }
 
 @Composable
-private fun ChatPanel(vm: RoomViewModel, modifier: Modifier) {
+private fun ChatPanel(vm: RoomViewModel, modifier: Modifier, onAttach: () -> Unit, onSaveFile: (String) -> Unit) {
     var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     LaunchedEffect(vm.chat.size) {
@@ -418,19 +449,33 @@ private fun ChatPanel(vm: RoomViewModel, modifier: Modifier) {
                         Text(line.who, color = if (line.mine) Palette.accent else Palette.text,
                             fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Text(line.text, color = Palette.text, fontSize = 14.sp)
+                        line.image?.let {
+                            Image(
+                                bitmap = it, contentDescription = line.text,
+                                modifier = Modifier.padding(top = 4.dp).size(220.dp).clip(RoundedCornerShape(8.dp)),
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+                        val key = line.file
+                        if (key != null && line.fileReady && !line.mine) {
+                            TextButton(onClick = { onSaveFile(key) }) { Text("Save…", color = Palette.accent) }
+                        }
                     }
                 }
             }
         }
-        OutlinedTextField(
-            value = draft, onValueChange = { draft = it }, placeholder = { Text("Message") },
-            singleLine = true, colors = fieldColors(),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = {
-                vm.send(draft)
-                draft = ""
-            }),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = draft, onValueChange = { draft = it }, placeholder = { Text("Message") },
+                singleLine = true, colors = fieldColors(),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = {
+                    vm.send(draft)
+                    draft = ""
+                }),
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            ControlButton(Icons.Filled.AttachFile, active = false, onClick = onAttach)
+        }
     }
 }

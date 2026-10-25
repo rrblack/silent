@@ -51,6 +51,9 @@ pub enum AudioInput {
     Platform,
     /// No audio device. Sends silence; used by tests and headless runs.
     Silent,
+    /// No audio device. Sends a 440 Hz beep, half a second on, half a
+    /// second off; for diagnostics and tests.
+    TestTone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -206,6 +209,7 @@ pub(crate) struct LocalMedia {
     factory: PeerConnectionFactory,
     pub audio: RtcAudioTrack,
     _silence: Option<NativeAudioSource>,
+    tone: Option<tokio::task::JoinHandle<()>>,
     platform_audio: bool,
     pub camera: LocalVideo,
     pub screen: LocalVideo,
@@ -218,6 +222,7 @@ impl LocalMedia {
         camera: CameraProfile,
         screen: ScreenProfile,
     ) -> Self {
+        let audio_choice = audio;
         let platform_audio = audio == AudioInput::Platform && factory.acquire_platform_adm();
         if audio == AudioInput::Platform && !platform_audio {
             tracing::warn!("no usable audio device; sending silence");
@@ -243,10 +248,15 @@ impl LocalMedia {
                 Some(source),
             )
         };
+        let tone = match (&silence, audio_choice == AudioInput::TestTone) {
+            (Some(source), true) => Some(tokio::spawn(test_tone(source.clone()))),
+            _ => None,
+        };
         Self {
             factory: factory.clone(),
             audio,
             _silence: silence,
+            tone,
             platform_audio,
             camera: LocalVideo::new(factory, VideoKind::Camera, camera.encoding()),
             screen: LocalVideo::new(factory, VideoKind::Screen, screen.encoding()),
@@ -269,8 +279,42 @@ impl Drop for LocalMedia {
     fn drop(&mut self) {
         self.camera.producer = None;
         self.screen.producer = None;
+        if let Some(tone) = self.tone.take() {
+            tone.abort();
+        }
         if self.platform_audio {
             self.factory.release_platform_adm();
+        }
+    }
+}
+
+/// Feeds `source` a beep: 10 ms frames, paced by the source's queue.
+async fn test_tone(source: NativeAudioSource) {
+    const RATE: u32 = 48_000;
+    const FRAME: usize = (RATE / 100) as usize;
+    let mut n: u64 = 0;
+    loop {
+        let data: Vec<i16> = (0..FRAME)
+            .map(|i| {
+                let t = n + i as u64;
+                let on = (t / (RATE as u64 / 2)) % 2 == 0;
+                let phase = t as f64 * 440.0 * std::f64::consts::TAU / RATE as f64;
+                if on {
+                    (phase.sin() * 8000.0) as i16
+                } else {
+                    0
+                }
+            })
+            .collect();
+        n += FRAME as u64;
+        let frame = AudioFrame {
+            data: data.into(),
+            sample_rate: RATE,
+            num_channels: 1,
+            samples_per_channel: FRAME as u32,
+        };
+        if source.capture_frame(&frame).await.is_err() {
+            return;
         }
     }
 }

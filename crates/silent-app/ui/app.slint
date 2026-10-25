@@ -10,6 +10,8 @@ export struct Tile {
     mic: bool,
     status: string,
     is-me: bool,
+    speaking: bool,
+    muted-for-me: bool,
 }
 
 export struct ChatLine {
@@ -18,6 +20,12 @@ export struct ChatLine {
     time: string,
     mine: bool,
     system: bool,
+    /// Set for a file: identifies it for saving.
+    file: string,
+    /// Ready to save (fully received, or sent by you).
+    file-ready: bool,
+    has-image: bool,
+    image: image,
 }
 
 export struct SourceItem {
@@ -81,11 +89,12 @@ component VideoTile inherits Rectangle {
     in property <bool> small: false;
     callback clicked;
     callback double-clicked;
+    callback mute-toggled;
     border-radius: small ? 8px : 12px;
     clip: true;
     background: Palette.card;
-    border-width: 1px;
-    border-color: touch.has-hover ? Palette.accent-dim : Palette.border;
+    border-width: tile.speaking ? 3px : 1px;
+    border-color: tile.speaking ? Palette.ok : touch.has-hover ? Palette.accent-dim : Palette.border;
 
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -143,6 +152,28 @@ component VideoTile inherits Rectangle {
             font-size: root.small ? 11px : 12px;
             vertical-alignment: center;
             overflow: elide;
+        }
+    }
+
+    // Mute a friend for yourself only.
+    Rectangle {
+        visible: !tile.is-me && tile.kind == "camera" && !root.small && (touch.has-hover || mute.has-hover || tile.muted-for-me);
+        x: parent.width - self.width - 10px;
+        y: 10px;
+        height: 26px;
+        width: mute-label.preferred-width + 20px;
+        border-radius: 13px;
+        background: tile.muted-for-me ? Palette.danger : mute.has-hover ? #000000e0 : #000000b0;
+        mute-label := Text {
+            text: tile.muted-for-me ? "Muted for you" : "Mute for me";
+            color: Palette.text;
+            font-size: 12px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        mute := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.mute-toggled(); }
         }
     }
 }
@@ -331,6 +362,7 @@ component Room inherits Rectangle {
     in property <bool> immersive: false;
     in-out property <string> draft;
     callback tile-clicked(string);
+    callback mute-friend(string);
     callback toggle-fullscreen;
     callback toggle-mic;
     callback toggle-camera;
@@ -338,6 +370,8 @@ component Room inherits Rectangle {
     callback leave;
     callback copy-code;
     callback send-chat;
+    callback send-file;
+    callback save-file(string);
     callback show-verify;
     callback show-stats;
     callback show-devices;
@@ -444,6 +478,7 @@ component Room inherits Rectangle {
                     height: !stage.spotlight ? stage.tile-h : self.big ? stage.big-h : stage.thumb-h;
                     clicked => { root.tile-clicked(t.key); }
                     double-clicked => { root.toggle-fullscreen(); }
+                    mute-toggled => { root.mute-friend(t.key); }
                 }
             }
 
@@ -479,12 +514,40 @@ component Room inherits Rectangle {
                                 font-italic: line.system;
                                 wrap: word-wrap;
                             }
+                            if line.has-image: Image {
+                                source: line.image;
+                                width: min(self.source.width * 1px, 260px);
+                                height: self.width * self.source.height / max(self.source.width, 1);
+                                image-fit: contain;
+                            }
+                            if line.file != "" && line.file-ready && !line.mine: Text {
+                                text: "Save…";
+                                color: Palette.accent;
+                                font-size: 12px;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.save-file(line.file); }
+                                }
+                            }
                         }
                     }
-                    LineEdit {
-                        text <=> root.draft;
-                        placeholder-text: "Message";
-                        accepted => { root.send-chat(); }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            text <=> root.draft;
+                            placeholder-text: "Message";
+                            accepted => { root.send-chat(); }
+                        }
+                        Rectangle {
+                            width: 36px;
+                            border-radius: 6px;
+                            background: attach.has-hover ? Palette.card-hover : Palette.card;
+                            Text { text: "+"; color: Palette.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                            attach := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.send-file(); }
+                            }
+                        }
                     }
                 }
             }
@@ -591,8 +654,11 @@ export component AppWindow inherits Window {
     callback leave;
     callback copy-code;
     callback send-chat;
+    callback send-file;
+    callback save-file(string);
     callback stats-opened;
     callback tile-clicked(string);
+    callback mute-friend(string);
     callback unfocus-tile;
     callback devices-requested;
     callback devices-changed;
@@ -662,6 +728,8 @@ export component AppWindow inherits Window {
         leave => { root.leave(); }
         copy-code => { root.copy-code(); }
         send-chat => { root.send-chat(); }
+        send-file => { root.send-file(); }
+        save-file(id) => { root.save-file(id); }
         show-verify => { root.verify-open = true; }
         show-devices => {
             root.devices-open = true;
@@ -674,6 +742,7 @@ export component AppWindow inherits Window {
         focus-index: root.focus-index;
         immersive: root.full-screen;
         tile-clicked(key) => { root.tile-clicked(key); }
+        mute-friend(key) => { root.mute-friend(key); }
         toggle-fullscreen => { root.full-screen = !root.full-screen; }
       }
     }

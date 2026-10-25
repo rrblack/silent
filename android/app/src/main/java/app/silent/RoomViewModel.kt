@@ -1,6 +1,7 @@
 package app.silent
 
 import android.app.Application
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.getValue
@@ -8,6 +9,8 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.silent.ffi.RoomListener
@@ -32,9 +35,28 @@ data class Friend(
     val camera: Boolean = false,
     val screen: Boolean = false,
     val words: String? = null,
+    val mutedForMe: Boolean = false,
 )
 
-data class ChatLine(val who: String, val text: String, val mine: Boolean = false, val system: Boolean = false)
+data class ChatLine(
+    val who: String,
+    val text: String,
+    val mine: Boolean = false,
+    val system: Boolean = false,
+    /** Set for a file line; the key to save it with. */
+    val file: String? = null,
+    val fileReady: Boolean = false,
+    val image: ImageBitmap? = null,
+)
+
+/** Files can be up to this big (the engine's limit). */
+const val MAX_FILE_BYTES = 64L * 1024 * 1024
+
+fun sizeText(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
+}
 
 class RoomViewModel(app: Application) : AndroidViewModel(app) {
     private val main = Handler(Looper.getMainLooper())
@@ -65,11 +87,19 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     var notice by mutableStateOf("")
         private set
     val friends = mutableStateMapOf<UInt, Friend>()
+    /** Who is talking now; includes [me] for yourself. */
+    var speaking by mutableStateOf<Set<UInt>>(emptySet())
+        private set
+    var me: UInt = 0u
+        private set
     val chat = mutableStateListOf<ChatLine>()
     var stats by mutableStateOf<List<String>>(emptyList())
         private set
 
     private val slots = ConcurrentHashMap<TileKey, FrameSlot>()
+    /** Received files, in memory only, until the room is left. */
+    private val files = mutableMapOf<String, Pair<String, ByteArray>>()
+    private var sentFiles = 0
     fun slot(key: TileKey): FrameSlot = slots.getOrPut(key) { FrameSlot() }
 
     private val listener = object : RoomListener {
@@ -122,6 +152,8 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 room = r
                 ActiveCall.room = r
                 this@RoomViewModel.code = r.code()
+                me = r.me()
+                speaking = emptySet()
                 micOn = true
                 cameraOn = false
                 screenOn = false
@@ -156,7 +188,10 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (returning == null) system("${update.name} joined")
                 friends[update.peer]?.let {
-                    friends[update.peer] = it.copy(name = update.name, status = "Securing connection…", verified = true)
+                    friends[update.peer] = it.copy(
+                        name = update.name, status = "Securing connection…", verified = true,
+                        mutedForMe = returning?.mutedForMe ?: false,
+                    )
                 }
             }
             is RoomUpdate.PeerWrongCode -> {
@@ -191,6 +226,25 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
             }
             is RoomUpdate.RelayLost -> notice = "Relay offline: the call continues, reconnecting…"
             is RoomUpdate.RelayRestored -> if (notice.startsWith("Relay")) notice = ""
+            is RoomUpdate.Speaking -> speaking = update.peers.toSet()
+            is RoomUpdate.FileIncoming -> chat.add(
+                ChatLine(
+                    friends[update.from]?.name ?: "Friend",
+                    "File: ${update.name} (${sizeText(update.size.toLong())}) · receiving…",
+                    file = "${update.from}:${update.id}",
+                ),
+            )
+            is RoomUpdate.FileReceived -> {
+                val key = "${update.from}:${update.id}"
+                files[key] = update.name to update.data
+                updateFileLine(key) {
+                    it.copy(text = "File: ${update.name} (${sizeText(update.data.size.toLong())})", fileReady = true)
+                }
+                showPreview(key, update.data)
+            }
+            is RoomUpdate.FileFailed -> updateFileLine("${update.from}:${update.id}") {
+                it.copy(text = it.text.removeSuffix(" · receiving…") + " · didn't arrive")
+            }
         }
     }
 
@@ -204,6 +258,59 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         micOn = !micOn
         room?.setMic(micOn)
         CallService.refresh(getApplication())
+    }
+
+    private fun updateFileLine(key: String, change: (ChatLine) -> ChatLine) {
+        val i = chat.indexOfLast { it.file == key }
+        if (i >= 0) chat[i] = change(chat[i])
+    }
+
+    /** Decodes a small preview when the file is an image. */
+    private fun showPreview(key: String, data: ByteArray) {
+        viewModelScope.launch {
+            val image = withContext(Dispatchers.Default) {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+                if (bounds.outWidth <= 0) return@withContext null
+                var sample = 1
+                while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+                val options = BitmapFactory.Options().apply { inSampleSize = sample }
+                BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
+            } ?: return@launch
+            updateFileLine(key) { it.copy(image = image) }
+        }
+    }
+
+    fun sendFile(fileName: String, data: ByteArray) {
+        val r = room ?: return
+        try {
+            r.sendFile(fileName, data)
+        } catch (e: SilentException) {
+            system("Couldn't send $fileName: ${e.message}")
+            return
+        }
+        sentFiles += 1
+        val key = "me:$sentFiles"
+        chat.add(
+            ChatLine(
+                name.ifBlank { "Me" }, "File: $fileName (${sizeText(data.size.toLong())})",
+                mine = true, file = key, fileReady = true,
+            ),
+        )
+        showPreview(key, data)
+    }
+
+    /** The name and bytes of a received file, to save. */
+    fun file(key: String): Pair<String, ByteArray>? = files[key]
+
+    fun notify(text: String) = system(text)
+
+    /** Silences a friend for this phone only. */
+    fun toggleMuteFriend(peer: UInt) {
+        val friend = friends[peer] ?: return
+        val muted = !friend.mutedForMe
+        friends[peer] = friend.copy(mutedForMe = muted)
+        room?.setFriendMuted(peer, muted)
     }
 
     fun flipCamera() {
@@ -246,6 +353,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         ScreenShareService.stop(getApplication())
         CallService.stop(getApplication())
         slots.clear()
+        files.clear()
         error = reason
         viewModelScope.launch(Dispatchers.IO) { r.leave() }
     }

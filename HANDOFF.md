@@ -9,8 +9,8 @@ The state of the project, how to pick it up, and what to do next. First written 
 | Crypto and protocol (`silent-core`, protocol v2) | ✅ | 24 unit tests | Independent security review |
 | Rust relay (`silent-relay`) | ✅ | 6 protocol tests, incl. the join budget | |
 | Cloudflare Worker relay (`signal/`) | ✅ | Same 6 tests against `wrangler dev`, plus all 7 call tests through it | Deployed? Check section 4 |
-| Call engine (`silent-engine`) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, **relay dropping mid-call and coming back** (call carries on, friends re-pair without a "left"), **ICE restart**, **H.264 negotiation** | Real networks, NAT, TURN, a real network switch |
-| Desktop app (Slint, red and black) | ✅ | Two instances on a virtual display: join, test-pattern screen share, **auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, scrolling Settings** | Real webcam, mic, speakers, device switching, GPU encoding |
+| Call engine (`silent-engine`, protocol v3) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, relay dropping mid-call and coming back, ICE restart, H.264 negotiation, **speaking detection and mute-for-me**, **3 MiB file transfer with chat flowing alongside** | Real networks, NAT, TURN, a real network switch |
+| Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me, a received image shown in chat with Save** | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
 | Installers | ✅ | CI builds a Windows zip (exe with icon), macOS dmg (.app with permission texts, ad hoc signed), Linux .deb and tarball; the .deb was inspected locally | Installing them on real machines |
 | Android app | ✅ | APK builds locally and in CI | **Never run on a phone** |
 | iOS app | 🟡 skeleton | SwiftUI app, builds for the simulator in CI (see `ios/README.md`) | Never run; no screen sharing yet |
@@ -65,7 +65,9 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] **Share screen** with a real screen, then a window.
    - [ ] **Camera** turns on and shows your webcam.
    - [ ] Mic works. Both windows share one mic and speaker, so expect feedback; headphones help.
-   - [ ] **Stats** names the codec and encoder. On a PC with a GPU it should say `H264 via NVENC` (NVIDIA), `MediaFoundation` (AMD/Intel) or `VideoToolbox` (Mac). `VP8 via libvpx` or `OpenH264` means software. To compare, start the app with `SILENT_VIDEO_CODEC=vp8` or `h264`.
+   - [ ] **Stats** names the codec and encoder. Expect `VP8 via libvpx` (software) on Windows: the libwebrtc build used has no hardware encoders there. On a Mac it should say `H264 via VideoToolbox`, and on Linux with an Intel or AMD GPU, VAAPI. To compare, start the app with `SILENT_VIDEO_CODEC=vp8` or `h264`.
+   - [ ] Talk: your tile gets a green ring in the other window. Hover a friend's tile → **Mute for me** silences them for you only.
+   - [ ] Click **+** next to the chat box and send a photo: it shows in both chats, and **Save…** writes it where you choose.
    - [ ] Click a tile: it fills the stage. A friend's screen share takes the stage by itself. Double-click or **F11** for full screen, **Esc** to come back.
    - [ ] **Ctrl+D** mutes (the tile label turns red on both sides), **Ctrl+E** toggles the camera.
    - [ ] **Devices**: pick another microphone or speaker mid-call; the other window should hear the change at once.
@@ -84,6 +86,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] The call keeps going with the phone screen off or the app in the background, and after pressing Back.
    - [ ] The call notification's **Mute** and **Leave** buttons work.
    - [ ] The camera flip button switches between front and back.
+   - [ ] The paperclip next to the chat box sends a photo both ways; **Save…** stores it. Long-press a friend's tile to mute them for you only.
    - [ ] **Reconnect:** turn the phone's Wi-Fi off mid-call (so it moves to mobile data). Expect "Reconnecting…" for a few seconds, then the call resumes. Needs the relay from section 4.
    - [ ] **Relay restart:** stop `silent-relay.exe` mid-call. The call keeps going; the app says the relay is offline. Start it again: within ~15 s the notice goes away and nobody shows as having left.
 
@@ -124,7 +127,9 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 - **No settings are saved.** The name, relay URL and device choices must be redone on every launch, because of the "nothing stored" rule. It's the owner's call whether to remember them locally.
 - **Builds aren't signed.** Windows SmartScreen warns. On macOS the dmg's app is only ad hoc signed: right-click → Open the first time, or `xattr -dr com.apple.quarantine /Applications/Silent.app`.
 - **CPU-based video rendering.** Fine for tiles; a GPU path is needed for several 1080p60 streams at once.
-- **Hardware encoding is untested.** The app asks for H.264 and the hardware encoder when libwebrtc reports one, with VP8 in software as the fallback. Nobody has looked at Stats on a real GPU yet.
+- **Hardware encoding is untested, and missing on Windows.** The app asks for H.264 and the hardware encoder when libwebrtc reports one, with VP8 in software as the fallback. The libwebrtc build (LiveKit's webrtc-sys) has VideoToolbox on macOS and iOS, MediaCodec on Android and VAAPI on Linux (Intel/AMD), but nothing on Windows, and NVENC only on Linux when built with the CUDA toolkit. Nobody has looked at Stats on a real GPU yet.
+- **No per-friend volume slider**, only Mute for me: the libwebrtc binding doesn't expose a volume control for incoming audio.
+- **webrtc-sys is patched** (`third_party/webrtc-sys`, see its README): upstream asks libwebrtc for verbose logs, which made every call burn CPU and kept file transfers under 1 MB/s. Reapply the one-line patch when upgrading.
 - **Rejoining after a relay outage starts every pair over.** New keys mean new safety words; compare them again if it matters.
 - **Room squatting and join spam.** Someone with a wrong code can hold one of the 4 slots (they can't see or hear anything). Both relays limit join attempts per room, which also means a join spammer can keep dropped friends from rejoining for a minute. See `docs/SECURITY.md`.
 - **Android:** first run on a device is untested. Remote video is capped at 30 fps and 960 px for camera tiles, by design for battery.
@@ -135,7 +140,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 1. **Hardware test pass** (section 3), then fix what breaks. This is still the most valuable next step: everything since the first session was verified only in the cloud container.
 2. **Deploy the relay** (section 4) if it isn't yet, and set `SILENT_RELAY_URL` as an Actions variable.
 3. **Check hardware encoding** from the Stats sheet on a real GPU and a real phone. If it still says software, look at `media::CodecChoice` and `VideoEncoderBackend::list_available()`.
-4. **Per-friend volume** and a speaking indicator (audio levels are in the inbound audio stats).
+4. **Hardware encoding on Windows:** needs encoder support in webrtc-sys (NVENC, AMF, QuickSync or Media Foundation). Worth it only if Stats shows the CPU struggling on real machines.
 5. **Desktop GPU rendering:** Slint wgpu interop with an I420 shader.
 6. **Signing and updates:**
    - Windows signing (Azure Trusted Signing)

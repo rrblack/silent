@@ -8,7 +8,8 @@
 //!    or a sealed envelope.
 //! 3. [`Signal`]: the plaintext inside a sealed envelope (names, SDP, ICE).
 //!
-//! Once WebRTC is up, [`ChannelMsg`] travels over the DTLS data channel.
+//! Once WebRTC is up, [`ChannelMsg`] travels over the DTLS data channel
+//! [`CHAT_CHANNEL`], and files as [`FileFrame`]s over [`FILE_CHANNEL`].
 
 use base64::engine::general_purpose::STANDARD_NO_PAD as B64;
 use base64::Engine;
@@ -16,11 +17,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::handshake::PeerId;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const MAX_PEERS: usize = 4;
 pub const MAX_RELAY_DATA: usize = 64 * 1024;
 pub const MAX_NAME_CHARS: usize = 32;
 pub const MAX_CHAT_CHARS: usize = 4000;
+/// Negotiated data channel ids: chat and media state, and files (kept apart
+/// so a big file never holds up a chat message).
+pub const CHAT_CHANNEL: u16 = 0;
+pub const FILE_CHANNEL: u16 = 1;
+/// Largest file a peer accepts. Received files are kept in memory only.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// Bytes of file data per data channel message.
+pub const FILE_CHUNK: usize = 64 * 1024;
+pub const MAX_FILE_NAME_CHARS: usize = 120;
 /// Join attempts a room accepts in a burst. Every attempt is one online
 /// guess at the code, so relays refill this budget slowly: one attempt per
 /// [`JOIN_REFILL_SECS`].
@@ -217,6 +227,80 @@ impl Default for IceConfig {
     }
 }
 
+/// One binary message on [`FILE_CHANNEL`]: a kind byte, a 4-byte transfer
+/// id, then the payload. The channel is ordered and reliable, so a `Start`
+/// always arrives before its chunks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileFrame {
+    Start { id: u32, name: String, size: u64 },
+    Chunk { id: u32, data: Vec<u8> },
+    Cancel { id: u32 },
+}
+
+impl FileFrame {
+    pub fn encode(&self) -> Vec<u8> {
+        let (kind, id) = match self {
+            FileFrame::Start { id, .. } => (0u8, id),
+            FileFrame::Chunk { id, .. } => (1, id),
+            FileFrame::Cancel { id } => (2, id),
+        };
+        let mut out = vec![kind];
+        out.extend_from_slice(&id.to_be_bytes());
+        match self {
+            FileFrame::Start { name, size, .. } => {
+                out.extend_from_slice(&size.to_be_bytes());
+                out.extend_from_slice(name.as_bytes());
+            }
+            FileFrame::Chunk { data, .. } => out.extend_from_slice(data),
+            FileFrame::Cancel { .. } => {}
+        }
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, FrameError> {
+        if bytes.len() < 5 {
+            return Err(FrameError);
+        }
+        let id = u32::from_be_bytes(bytes[1..5].try_into().expect("4 bytes"));
+        let body = &bytes[5..];
+        match bytes[0] {
+            0 => {
+                let size = body.get(..8).ok_or(FrameError)?;
+                let size = u64::from_be_bytes(size.try_into().expect("8 bytes"));
+                let name = std::str::from_utf8(&body[8..]).map_err(|_| FrameError)?;
+                Ok(FileFrame::Start {
+                    id,
+                    name: clean_file_name(name),
+                    size,
+                })
+            }
+            1 => Ok(FileFrame::Chunk {
+                id,
+                data: body.to_vec(),
+            }),
+            2 => Ok(FileFrame::Cancel { id }),
+            _ => Err(FrameError),
+        }
+    }
+}
+
+/// A file name that is safe to show and to offer as a default when saving:
+/// no directories, no control characters, capped in length.
+pub fn clean_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_FILE_NAME_CHARS)
+        .collect();
+    let cleaned = cleaned.trim().trim_start_matches('.');
+    if cleaned.is_empty() {
+        "file".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
 /// Trims and caps a user-supplied display name.
 pub fn clean_name(name: &str) -> String {
     let cleaned: String = name
@@ -283,6 +367,45 @@ mod tests {
         let a = new_session_id();
         assert_eq!(a.len(), 22);
         assert_ne!(a, new_session_id());
+    }
+
+    #[test]
+    fn file_frames_roundtrip() {
+        for f in [
+            FileFrame::Start {
+                id: 7,
+                name: "photo.jpg".into(),
+                size: 123_456,
+            },
+            FileFrame::Chunk {
+                id: u32::MAX,
+                data: vec![1, 2, 3],
+            },
+            FileFrame::Chunk {
+                id: 0,
+                data: vec![],
+            },
+            FileFrame::Cancel { id: 9 },
+        ] {
+            assert_eq!(FileFrame::decode(&f.encode()).unwrap(), f);
+        }
+        assert!(FileFrame::decode(&[0, 0, 0, 0]).is_err());
+        assert!(FileFrame::decode(&[0, 0, 0, 0, 1, 2]).is_err());
+        assert!(FileFrame::decode(&[7, 0, 0, 0, 1]).is_err());
+    }
+
+    #[test]
+    fn file_names_are_cleaned() {
+        assert_eq!(clean_file_name("../../etc/passwd"), "passwd");
+        assert_eq!(clean_file_name("C:\\Users\\me\\cat.png"), "cat.png");
+        assert_eq!(clean_file_name(".bashrc"), "bashrc");
+        assert_eq!(clean_file_name("a\nb.txt"), "ab.txt");
+        assert_eq!(clean_file_name(""), "file");
+        assert_eq!(clean_file_name("/"), "file");
+        assert_eq!(
+            clean_file_name(&"x".repeat(500)).chars().count(),
+            MAX_FILE_NAME_CHARS
+        );
     }
 
     #[test]

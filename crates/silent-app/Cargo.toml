@@ -22,6 +22,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2"] }
 arboard = { version = "3", default-features = false }
+# Native open/save dialogs; the XDG portal on Linux, so no GTK.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [build-dependencies]
 slint-build = "1.18"

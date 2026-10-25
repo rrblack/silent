@@ -5,7 +5,9 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -16,6 +18,10 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val vm: RoomViewModel by viewModels()
@@ -28,6 +34,55 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == Activity.RESULT_OK && data != null) {
             vm.screenOn = true
             ScreenShareService.start(this, result.resultCode, data)
+        }
+    }
+
+    private val pickFile = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) sendFile(uri)
+    }
+
+    /** The file waiting for a place to be saved. */
+    private var saving: Pair<String, ByteArray>? = null
+
+    private val saveFile = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        val (name, data) = saving ?: return@registerForActivityResult
+        saving = null
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { contentResolver.openOutputStream(uri)?.use { it.write(data) } != null }.getOrDefault(false)
+            }
+            vm.notify(if (ok) "Saved $name." else "Couldn't save $name.")
+        }
+    }
+
+    private fun sendFile(uri: Uri) {
+        lifecycleScope.launch {
+            val file = withContext(Dispatchers.IO) {
+                runCatching {
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "file"
+                    val data = contentResolver.openInputStream(uri)?.use(::readCapped)
+                    name to data
+                }.getOrNull()
+            }
+            when {
+                file == null -> vm.notify("Couldn't read that file.")
+                file.second == null -> vm.notify("${file.first} is too big: files can be up to 64 MB.")
+                else -> vm.sendFile(file.first, file.second!!)
+            }
+        }
+    }
+
+    /** The whole stream, or null when it is over the file size limit. */
+    private fun readCapped(input: java.io.InputStream): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) return out.toByteArray()
+            out.write(buffer, 0, n)
+            if (out.size() > MAX_FILE_BYTES) return null
         }
     }
 
@@ -67,6 +122,13 @@ class MainActivity : ComponentActivity() {
                         onStopScreen = {
                             vm.screenOn = false
                             ScreenShareService.stop(this)
+                        },
+                        onAttach = { pickFile.launch("*/*") },
+                        onSaveFile = { key ->
+                            vm.file(key)?.let {
+                                saving = it
+                                saveFile.launch(it.first)
+                            }
                         },
                     )
                 } else {

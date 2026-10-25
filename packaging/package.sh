@@ -58,7 +58,7 @@ Version: $version
 Architecture: $arch
 Maintainer: Silent <noreply@silent.invalid>
 Depends: $depends
-Recommends: pipewire, xdg-desktop-portal
+Recommends: pipewire, xdg-desktop-portal, libva2
 Section: net
 Priority: optional
 Description: Encrypted calls, screen sharing and chat for up to four friends

@@ -77,7 +77,7 @@ jobs:
           sudo apt-get install -y clang-21 lld-21 libglib2.0-dev libfontconfig1-dev libxkbcommon-dev \
             libxkbcommon-x11-0 libwayland-dev libv4l-dev libpulse-dev libasound2-dev libgbm-dev libdrm-dev \
             libxcb1-dev libxrandr-dev libxdamage-dev libxfixes-dev libxcomposite-dev libxext-dev libxtst-dev \
-            libpipewire-0.3-dev libgl-dev
+            libpipewire-0.3-dev libgl-dev libva-dev
           echo "CC=clang-21" >> "$GITHUB_ENV"
           echo "CXX=clang++-21" >> "$GITHUB_ENV"
 

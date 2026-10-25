@@ -66,6 +66,36 @@ pub struct PeerStats {
     pub rtt_ms: Option<f64>,
 }
 
+/// Audio levels on one connection, 0..1 (linear), when known.
+pub(crate) struct AudioLevels {
+    /// Our microphone, as sent.
+    pub sent: Option<f64>,
+    /// The friend on the other end, as received.
+    pub received: Option<f64>,
+}
+
+pub(crate) async fn audio_levels(pc: &PeerConnection) -> AudioLevels {
+    let mut levels = AudioLevels {
+        sent: None,
+        received: None,
+    };
+    let Ok(report) = pc.get_stats().await else {
+        return levels;
+    };
+    for stat in report {
+        match stat {
+            RtcStats::MediaSource(s) if s.source.kind == "audio" => {
+                levels.sent = Some(s.audio.audio_level);
+            }
+            RtcStats::InboundRtp(s) if s.stream.kind == "audio" => {
+                levels.received = Some(s.inbound.audio_level);
+            }
+            _ => {}
+        }
+    }
+    levels
+}
+
 pub(crate) async fn collect(peer: PeerId, pc: &PeerConnection) -> PeerStats {
     let kinds: HashMap<String, VideoKind> = pc
         .transceivers()

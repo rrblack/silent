@@ -24,6 +24,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 | `android/` | Kotlin + Jetpack Compose app, CameraX, MediaProjection | `build-native.sh` must run before Gradle. |
 | `ios/` | SwiftUI app, AVFoundation camera | XcodeGen `project.yml`; `build-native.sh` makes the XCFramework and Swift bindings (Mac only). See `ios/README.md`. |
 | `packaging/` | Icons, macOS `Info.plist`, Linux `.desktop`, `package.sh` | `package.sh` turns a release build into `dist/` (dmg, deb + tarball, zip). CI runs it. |
+| `third_party/webrtc-sys` | webrtc-sys 0.3.49 with a one-line patch (log sink at warnings, not verbose) | Patched in via `[patch.crates-io]`. Read its README before upgrading libwebrtc. |
 | `docs/SECURITY.md` | Protocol and threat model | Update it whenever the protocol changes. |
 
 ## How a call works (short version)
@@ -41,10 +42,11 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 # Linux needs clang >= 21 for libwebrtc's prebuilt archive:
 export CC=clang-21 CXX=clang++-21
 
-cargo test --workspace                 # 41 tests incl. real in-process WebRTC calls (~25 s after first build)
+cargo test --workspace                 # 47 tests incl. real in-process WebRTC calls (~35 s after first build)
 cargo clippy --workspace --all-targets # must stay warning-free
 cargo fmt --all
 cargo run --release -p silent-app      # twice, to call yourself
+cargo run -p silent-engine --example bot -- http://127.0.0.1:8787 <code> [file]   # a test participant: beeps, test pattern, echoes chat, sends a file
 
 cd signal && npx tsc --noEmit          # Worker typecheck
 SILENT_TEST_RELAY=http://127.0.0.1:8787 cargo test -p silent-relay   # protocol tests against `wrangler dev`
@@ -95,3 +97,5 @@ Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` an
 10. **Never drop a `PeerConnection`/`DataChannel` right after `close()`.** libwebrtc can still deliver queued callbacks (e.g. ICE state), and webrtc-sys frees the C++ observer with the last Rust handle, so the callback hits freed memory (intermittent SIGSEGV). `room::retire` clears handlers, closes, and parks handles for 10 s; `Peer`'s `Drop` goes through it. All engines share one process-wide factory for the same reason.
 11. **Each side sends with the first codec the *other* side lists.** Codec preferences on your transceivers decide what your friend sends you, not what you send. That's why a device announces `send_h264` in its `Hello` and the receiver orders its codecs for it (`Actor::prefer_codecs`).
 12. `ScrollView` content in Slint stretches to the viewport; give the inner layout `height: self.preferred-height`.
+13. **Upstream webrtc-sys logs at verbose.** Every log line gets formatted and dcSCTP hex-dumps each data channel packet (CPU in every call, files under 1 MB/s). `third_party/webrtc-sys` patches the sink to warnings; keep that patch when upgrading.
+14. Hardware encoders are compiled in only when their headers are present at build time: `libva-dev` for VAAPI on Linux (CI installs it), the CUDA toolkit for NVENC on Linux. There is no Windows hardware encoder in webrtc-sys.
