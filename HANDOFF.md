@@ -127,7 +127,8 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 ## 5. Known gaps and quirks
 
 - **No settings are saved.** The name, relay URL and device choices must be redone on every launch, because of the "nothing stored" rule. It's the owner's call whether to remember them locally.
-- **Builds aren't signed.** Windows SmartScreen warns. On macOS the dmg's app is only ad hoc signed: right-click → Open the first time, or `xattr -dr com.apple.quarantine /Applications/Silent.app`.
+- **Builds aren't signed.** Windows SmartScreen warns. On macOS the dmg's app is only ad hoc signed: right-click → Open the first time (on macOS 15, System Settings → Privacy & Security → Open Anyway), or `xattr -dr com.apple.quarantine /Applications/Silent.app`.
+- **The macOS build is Apple silicon only.** CI builds on arm64 runners; an Intel build would need a second macOS job (or a universal binary), doubling macOS CI time.
 - **CPU-based video rendering.** Fine for tiles; a GPU path is needed for several 1080p60 streams at once.
 - **Hardware encoding is untested, and missing on Windows.** The app asks for H.264 and the hardware encoder when libwebrtc reports one, with VP8 in software as the fallback. The libwebrtc build (LiveKit's webrtc-sys) has VideoToolbox on macOS and iOS, MediaCodec on Android and VAAPI on Linux (Intel/AMD), but nothing on Windows, and NVENC only on Linux when built with the CUDA toolkit. Nobody has looked at Stats on a real GPU yet.
 - **No per-friend volume slider**, only Mute for me: the libwebrtc binding doesn't expose a volume control for incoming audio.
@@ -136,7 +137,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 - **Rejoining after a relay outage starts every pair over.** New keys mean new safety words; compare them again if it matters.
 - **Room squatting and join spam.** Someone who joins with a wrong code is now removed automatically by the people who were there first, but can rejoin until the per-room join budget runs out, and a join spammer can keep dropped friends from rejoining for a minute. See `docs/SECURITY.md`.
 - **Android:** first run on a device is untested. Remote video is capped at 30 fps and 960 px for camera tiles, by design for battery.
-- **iOS:** only built for the simulator so far. Screen sharing needs a signed build (App Group), and there's no CallKit yet.
+- **iOS:** only built for the simulator so far. Screen sharing needs a signed build (App Group), and there's no CallKit yet. The bundle ids `app.silent`, `app.silent.broadcast` and the App Group `group.app.silent` must be registrable under the owner's Apple team; if not, rename them together in `ios/project.yml`, `ScreenSocket.appGroup` and `BroadcastButton.preferredExtension`. Camera rotation follows how the phone is held, untested on a device.
 
 ## 6. Next steps, in order
 

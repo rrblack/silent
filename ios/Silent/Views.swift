@@ -263,6 +263,11 @@ struct RoomView: View {
             }
             HStack {
                 Button { picking = true } label: { Image(systemName: "paperclip") }
+                    // Its own view: iOS 16 shows only one of an importer and
+                    // an exporter attached to the same view.
+                    .fileImporter(isPresented: $picking, allowedContentTypes: [.item]) { result in
+                        if case .success(let url) = result { model.sendFile(at: url) }
+                    }
                 TextField("Message", text: $draft)
                     .padding(10).background(Palette.card).clipShape(RoundedRectangle(cornerRadius: 10))
                     .onSubmit(sendDraft)
@@ -270,9 +275,6 @@ struct RoomView: View {
             }
         }
         .padding(16)
-        .fileImporter(isPresented: $picking, allowedContentTypes: [.item]) { result in
-            if case .success(let url) = result { model.sendFile(at: url) }
-        }
         .fileExporter(
             isPresented: Binding(get: { saving != nil }, set: { if !$0 { saving = nil } }),
             document: saving?.blob,
@@ -325,7 +327,11 @@ struct RoomView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.panel.ignoresSafeArea())
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in model.refreshStats() }
-        .onAppear(perform: model.refreshStats)
+        .task {
+            while !Task.isCancelled {
+                model.refreshStats()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
     }
 }

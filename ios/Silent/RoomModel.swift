@@ -76,7 +76,9 @@ final class RoomModel: ObservableObject {
     /// Received files, in memory only, until the room is left.
     private(set) var files: [String: (name: String, data: Data)] = [:]
     private var sentFiles = 0
-    private lazy var listener = Listener(model: self)
+    /// The listener of the room being opened or in use; callbacks from any
+    /// other (a room already left) are dropped.
+    private var listener: Listener?
     private var network: NWPathMonitor?
     private var interface: NWInterface.InterfaceType?
 
@@ -107,7 +109,8 @@ final class RoomModel: ObservableObject {
             relayUrl: relay, name: name, cameraHigh: cameraHigh,
             screenDetail: false, relayOnly: relayOnly, useAudio: true
         )
-        let listener = self.listener
+        let listener = Listener(model: self)
+        self.listener = listener
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result<SilentRoom, Error> {
                 if let code {
@@ -121,6 +124,7 @@ final class RoomModel: ObservableObject {
                 case .success(let room):
                     self.entered(room, created: code == nil)
                 case .failure(let error):
+                    if self.listener === listener { self.listener = nil }
                     self.error = error.localizedDescription
                 }
             }
@@ -141,6 +145,7 @@ final class RoomModel: ObservableObject {
         frames = [:]
         files = [:]
         camera.attach(room)
+        camera.onFailure = { [weak self] in self?.cameraFailed() }
         screenOn = false
         screen.onSharing = { [weak self] on in self?.screenOn = on }
         screen.start(room: room)
@@ -155,6 +160,7 @@ final class RoomModel: ObservableObject {
     func leave(reason: String = "") {
         guard let room else { return }
         self.room = nil
+        listener = nil
         camera.stop()
         camera.attach(nil)
         screen.stop()
@@ -166,7 +172,11 @@ final class RoomModel: ObservableObject {
         error = reason
         DispatchQueue.global(qos: .userInitiated).async {
             room.leave()
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            DispatchQueue.main.async {
+                // Not if a new call started meanwhile.
+                guard self.room == nil, !self.busy else { return }
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
         }
     }
 
@@ -176,13 +186,43 @@ final class RoomModel: ObservableObject {
     }
 
     func toggleCamera() {
-        cameraOn.toggle()
-        room?.setCamera(on: cameraOn)
         if cameraOn {
-            camera.start(front: frontCamera, high: cameraHigh)
-        } else {
+            cameraOn = false
+            room?.setCamera(on: false)
             camera.stop()
+            return
         }
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            cameraStarted()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted { self.cameraStarted() } else { self.cameraDenied() }
+                }
+            }
+        default:
+            cameraDenied()
+        }
+    }
+
+    private func cameraStarted() {
+        guard room != nil, !cameraOn else { return }
+        cameraOn = true
+        room?.setCamera(on: true)
+        camera.start(front: frontCamera, high: cameraHigh)
+    }
+
+    private func cameraDenied() {
+        system("Silent can't use the camera. Allow it in Settings → Silent.")
+    }
+
+    /// The camera couldn't start (in use elsewhere, or no camera).
+    private func cameraFailed() {
+        guard cameraOn else { return }
+        cameraOn = false
+        room?.setCamera(on: false)
+        system("The camera couldn't start.")
     }
 
     private func updateFileLine(_ key: String, _ change: (inout ChatLine) -> Void) {
@@ -190,29 +230,39 @@ final class RoomModel: ObservableObject {
         change(&chat[i])
     }
 
-    /// Sends a file the user picked.
+    /// Sends a file the user picked. Reading it and making the preview
+    /// happen off the main thread.
     func sendFile(at url: URL) {
         guard let room else { return }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size <= maxFileBytes, let data = try? Data(contentsOf: url) else {
-            system("\(url.lastPathComponent) can't be sent: files can be up to 64 MB.")
-            return
+        let fileName = url.lastPathComponent
+        DispatchQueue.global(qos: .userInitiated).async {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let data = size <= maxFileBytes ? (try? Data(contentsOf: url)) : nil
+            let result = Result<Void, Error> {
+                if let data { try room.sendFile(name: fileName, data: data) }
+            }
+            let preview = data.flatMap(thumbnail)
+            DispatchQueue.main.async {
+                guard self.room === room else { return }
+                guard let data else {
+                    self.system("\(fileName) can't be sent: files can be up to 64 MB.")
+                    return
+                }
+                if case .failure(let error) = result {
+                    self.system("Couldn't send \(fileName): \(error.localizedDescription)")
+                    return
+                }
+                self.sentFiles += 1
+                self.chat.append(ChatLine(
+                    who: self.name.isEmpty ? "Me" : self.name,
+                    text: "File: \(fileName) (\(sizeText(data.count)))",
+                    mine: true, file: "me:\(self.sentFiles)", fileReady: true,
+                    image: preview
+                ))
+            }
         }
-        do {
-            try room.sendFile(name: url.lastPathComponent, data: data)
-        } catch {
-            system("Couldn't send \(url.lastPathComponent): \(error.localizedDescription)")
-            return
-        }
-        sentFiles += 1
-        chat.append(ChatLine(
-            who: name.isEmpty ? "Me" : name,
-            text: "File: \(url.lastPathComponent) (\(sizeText(data.count)))",
-            mine: true, file: "me:\(sentFiles)", fileReady: true,
-            image: UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 440, height: 440))
-        ))
     }
 
     func note(_ text: String) {
@@ -268,7 +318,8 @@ final class RoomModel: ObservableObject {
         chat.append(ChatLine(who: "", text: text, system: true))
     }
 
-    fileprivate func apply(_ update: RoomUpdate) {
+    fileprivate func apply(_ update: RoomUpdate, from listener: Listener) {
+        guard listener === self.listener else { return }
         switch update {
         case .peerJoining(let peer):
             friends[peer] = Friend(id: peer)
@@ -334,7 +385,14 @@ final class RoomModel: ObservableObject {
             updateFileLine(key) { line in
                 line.text = "File: \(name) (\(sizeText(data.count)))"
                 line.fileReady = true
-                line.image = UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 440, height: 440))
+            }
+            let room = self.room
+            DispatchQueue.global(qos: .utility).async {
+                guard let preview = thumbnail(data) else { return }
+                DispatchQueue.main.async {
+                    guard self.room === room else { return }
+                    self.updateFileLine(key) { $0.image = preview }
+                }
             }
         case .fileFailed(let from, let id):
             updateFileLine("\(from):\(id)") { line in
@@ -343,9 +401,13 @@ final class RoomModel: ObservableObject {
         }
     }
 
-    fileprivate func show(_ image: UIImage, for key: TileKey) {
-        guard friends[key.peer] != nil else { return }
-        frames[key] = image
+    fileprivate func show(_ shown: [TileKey: UIImage], from listener: Listener) {
+        guard listener === self.listener else { return }
+        for (key, image) in shown {
+            // A frame still in flight when the friend turned it off stays away.
+            guard let friend = friends[key.peer], key.screen ? friend.screen : friend.camera else { continue }
+            frames[key] = image
+        }
     }
 
     private func startAudioSession() {
@@ -380,22 +442,48 @@ final class RoomModel: ObservableObject {
     }
 }
 
-/// Receives engine callbacks on background threads.
+/// A small preview of an image file, or `nil` for other files.
+private func thumbnail(_ data: Data) -> UIImage? {
+    UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 440, height: 440))
+}
+
+/// Receives one room's engine callbacks on background threads.
 private final class Listener: RoomListener, @unchecked Sendable {
     weak var model: RoomModel?
+    /// Only the newest frame per tile waits for the main thread, so a busy
+    /// main thread drops frames instead of piling them up.
+    private let lock = NSLock()
+    private var pending: [TileKey: UIImage] = [:]
+    private var scheduled = false
 
     init(model: RoomModel) {
         self.model = model
     }
 
     func onUpdate(update: RoomUpdate) {
-        DispatchQueue.main.async { [weak self] in self?.model?.apply(update) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.model?.apply(update, from: self)
+        }
     }
 
     func onVideoFrame(peer: UInt32, screen: Bool, width: UInt32, height: UInt32, rgba: Data) {
         guard let image = Listener.image(width: Int(width), height: Int(height), rgba: rgba) else { return }
-        let key = TileKey(peer: peer, screen: screen)
-        DispatchQueue.main.async { [weak self] in self?.model?.show(image, for: key) }
+        lock.lock()
+        pending[TileKey(peer: peer, screen: screen)] = image
+        let schedule = !scheduled
+        scheduled = true
+        lock.unlock()
+        guard schedule else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let shown = self.pending
+            self.pending = [:]
+            self.scheduled = false
+            self.lock.unlock()
+            self.model?.show(shown, from: self)
+        }
     }
 
     private static func image(width: Int, height: Int, rgba: Data) -> UIImage? {

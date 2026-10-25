@@ -43,6 +43,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Bumped when the camera permission is granted, to start the camera then. */
+    private var cameraAllowed by mutableStateOf(0)
+
+    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) {
+            cameraAllowed++
+        } else if (vm.cameraOn) {
+            vm.setCamera(false)
+            vm.notify("Silent can't use the camera. Allow it in Settings → Apps → Silent.")
+        }
+    }
+
     private val pickFile = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) sendFile(uri)
     }
@@ -122,11 +134,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             SilentTheme {
                 val inRoom = vm.room != null
-                LaunchedEffect(vm.cameraOn, vm.frontCamera, inRoom) {
+                LaunchedEffect(vm.cameraOn, vm.frontCamera, inRoom, cameraAllowed) {
                     if (vm.cameraOn && inRoom && granted(Manifest.permission.CAMERA)) {
-                        camera.start(this@MainActivity, vm.cameraHigh, vm.frontCamera)
+                        camera.start(this@MainActivity, vm.cameraHigh, vm.frontCamera) {
+                            if (vm.cameraOn) {
+                                vm.setCamera(false)
+                                vm.notify("The camera couldn't start.")
+                            }
+                        }
                     } else {
                         camera.stop()
+                        if (vm.cameraOn && inRoom) cameraPermission.launch(Manifest.permission.CAMERA)
                     }
                 }
                 LaunchedEffect(inRoom) {

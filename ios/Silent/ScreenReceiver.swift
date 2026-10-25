@@ -8,12 +8,7 @@ final class ScreenReceiver {
     /// Called on the main thread when sharing starts or stops.
     var onSharing: ((Bool) -> Void)?
 
-    private var listener: Int32 = -1
-    private var room: SilentRoom?
-    private let queue = DispatchQueue(label: "silent.screen")
-
-    /// Frames bigger than this are refused (a 4K screen is ~12 MB).
-    private static let maxPlane = 32 * 1024 * 1024
+    private var session: Session?
 
     func start(room: SilentRoom) {
         stop()
@@ -30,40 +25,111 @@ final class ScreenReceiver {
             close(fd)
             return
         }
-        listener = fd
-        self.room = room
-        queue.async { self.acceptLoop(fd, room: room) }
+        let session = Session(listener: fd, room: room)
+        self.session = session
+        session.onSharing = { [weak self, weak session] sharing in
+            DispatchQueue.main.async {
+                guard let self, let session, self.session === session else { return }
+                self.onSharing?(sharing)
+            }
+        }
+        Thread.detachNewThread { session.run() }
     }
 
+    /// Stops listening and disconnects the extension, which then ends the
+    /// broadcast.
     func stop() {
-        guard listener >= 0 else { return }
-        shutdown(listener, SHUT_RDWR)
-        close(listener)
-        listener = -1
-        room = nil
+        guard let session else { return }
+        self.session = nil
+        session.stop()
         if let path = ScreenSocket.path { unlink(path) }
     }
+}
 
-    private func acceptLoop(_ fd: Int32, room: SilentRoom) {
-        while true {
-            let client = accept(fd, nil, nil)
-            if client < 0 { return }
-            var noSigPipe: Int32 = 1
-            setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-            serve(client, room: room)
-            close(client)
+/// One room's listener and its connection to the extension. It runs on its
+/// own thread and closes its sockets itself; `stop()` only wakes it, so a
+/// file descriptor is never closed while that thread may still use it.
+private final class Session {
+    var onSharing: ((Bool) -> Void)?
+
+    private let listener: Int32
+    private let room: SilentRoom
+    private let lock = NSLock()
+    private var client: Int32 = -1
+    private var stopped = false
+
+    /// Frames bigger than this are refused (a 4K screen is ~12 MB).
+    private static let maxPlane = 32 * 1024 * 1024
+
+    /// Full-range luma and chroma squeezed into video range (16–235 and
+    /// 16–240), which is what the encoder assumes for I420.
+    private static let lumaRange: [UInt8] = (0 ... 255).map { (l: Int) -> UInt8 in UInt8(16 + (l * 219 + 127) / 255) }
+    private static let chromaRange: [UInt8] = (0 ... 255).map { (c: Int) -> UInt8 in
+        let scaled = (c - 128) * 224
+        return UInt8(128 + (scaled + (scaled >= 0 ? 127 : -127)) / 255)
+    }
+
+    private static func toVideoRange(_ y: inout Data, _ uv: inout Data) {
+        remap(&y, lumaRange)
+        remap(&uv, chromaRange)
+    }
+
+    private static func remap(_ plane: inout Data, _ table: [UInt8]) {
+        table.withUnsafeBufferPointer { table in
+            plane.withUnsafeMutableBytes { bytes in
+                for i in bytes.indices { bytes[i] = table[Int(bytes[i])] }
+            }
         }
     }
 
-    private func serve(_ client: Int32, room: SilentRoom) {
+    init(listener: Int32, room: SilentRoom) {
+        self.listener = listener
+        self.room = room
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        if client >= 0 { shutdown(client, SHUT_RDWR) }
+        lock.unlock()
+    }
+
+    private var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    func run() {
+        defer { close(listener) }
+        while !isStopped {
+            var ready = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+            guard poll(&ready, 1, 250) > 0 else { continue }
+            let fd = accept(listener, nil, nil)
+            if fd < 0 { continue }
+            var noSigPipe: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+            lock.lock()
+            let accepted = !stopped
+            if accepted { client = fd }
+            lock.unlock()
+            if accepted { serve(fd) }
+            lock.lock()
+            client = -1
+            lock.unlock()
+            close(fd)
+        }
+    }
+
+    private func serve(_ client: Int32) {
         var sharing = false
         defer {
             if sharing {
                 room.setScreen(on: false)
-                DispatchQueue.main.async { self.onSharing?(false) }
+                onSharing?(false)
             }
         }
-        var header = [UInt32](repeating: 0, count: 6)
+        var header = [UInt32](repeating: 0, count: ScreenSocket.headerFields)
         while header.withUnsafeMutableBytes({ ScreenSocket.read(client, $0.baseAddress!, ScreenSocket.headerSize) }) {
             let h = header.map { UInt32(littleEndian: $0) }
             let (width, height, yStride, uvStride, rotation) = (Int(h[1]), Int(h[2]), Int(h[3]), Int(h[4]), h[5])
@@ -76,11 +142,12 @@ final class ScreenReceiver {
             var uv = Data(count: uvLength)
             let ok = y.withUnsafeMutableBytes { ScreenSocket.read(client, $0.baseAddress!, yLength) }
                 && uv.withUnsafeMutableBytes { ScreenSocket.read(client, $0.baseAddress!, uvLength) }
-            guard ok else { return }
+            guard ok, !isStopped else { return }
+            if h[6] != 0 { Self.toVideoRange(&y, &uv) }
             if !sharing {
                 sharing = true
                 room.setScreen(on: true)
-                DispatchQueue.main.async { self.onSharing?(true) }
+                onSharing?(true)
             }
             room.pushScreenYuv(
                 width: UInt32(width), height: UInt32(height),

@@ -48,7 +48,12 @@ Linux)
     # dpkg-shlibdeps wants to run inside a source package.
     mkdir -p "$stage/debian"
     printf 'Source: silent\n\nPackage: silent\nArchitecture: any\n' >"$stage/debian/control"
-    depends=$(cd "$stage" && dpkg-shlibdeps -O "$pkg/usr/bin/silent" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')
+    if ! shlibs=$(cd "$stage" && dpkg-shlibdeps -O "$pkg/usr/bin/silent" 2>&1); then
+        echo "dpkg-shlibdeps failed:" >&2
+        echo "$shlibs" >&2
+        exit 1
+    fi
+    depends=$(echo "$shlibs" | sed -n 's/^shlibs:Depends=//p')
     # Loaded at run time, so dpkg-shlibdeps can't see them: keyboard, OpenGL, audio.
     depends="${depends:+$depends, }libxkbcommon-x11-0, libegl1 | libgl1, libpulse0"
     mkdir -p "$pkg/DEBIAN"

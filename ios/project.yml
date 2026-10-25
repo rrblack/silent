@@ -36,6 +36,7 @@ targets:
         SilentRelayURL: ${SILENT_RELAY_URL}
         NSCameraUsageDescription: Silent shows your camera to the friends in your call, end-to-end encrypted. Nothing is recorded.
         NSMicrophoneUsageDescription: Silent sends your voice to the friends in your call, end-to-end encrypted. Nothing is recorded.
+        NSLocalNetworkUsageDescription: Silent connects directly to friends and relays on your network for calls.
         UIBackgroundModes: [audio, voip]
         UILaunchScreen: {}
         UIUserInterfaceStyle: Dark

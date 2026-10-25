@@ -8,6 +8,7 @@ import ReplayKit
 final class SampleHandler: RPBroadcastSampleHandler {
     private var socket: Int32 = -1
     private let queue = DispatchQueue(label: "silent.broadcast")
+    private let lock = NSLock()
     private var busy = false
     private var lastFrame = Date.distantPast
 
@@ -29,10 +30,15 @@ final class SampleHandler: RPBroadcastSampleHandler {
         }
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        // A write that makes no progress for a second means the app stopped
+        // reading (left the room, or was suspended): end the broadcast.
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         socket = fd
     }
 
     override func broadcastFinished() {
+        if socket >= 0 { shutdown(socket, SHUT_RDWR) }
         queue.sync {
             if socket >= 0 { close(socket) }
             socket = -1
@@ -45,12 +51,21 @@ final class SampleHandler: RPBroadcastSampleHandler {
         else { return }
         // At most 30 frames a second, and never queue up behind a slow app.
         let now = Date()
-        guard !busy, now.timeIntervalSince(lastFrame) >= 1.0 / 30 else { return }
-        busy = true
-        lastFrame = now
+        lock.lock()
+        let take = !busy && now.timeIntervalSince(lastFrame) >= 1.0 / 30
+        if take {
+            busy = true
+            lastFrame = now
+        }
+        lock.unlock()
+        guard take else { return }
         let rotation = Self.rotation(of: sampleBuffer)
         queue.async {
-            defer { self.busy = false }
+            defer {
+                self.lock.lock()
+                self.busy = false
+                self.lock.unlock()
+            }
             if !self.send(buffer, rotation: rotation) {
                 self.fail("Silent stopped receiving the screen.")
             }
@@ -74,6 +89,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
             UInt32(yStride),
             UInt32(uvStride),
             rotation,
+            CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ? 1 : 0,
         ].map(\.littleEndian)
         return header.withUnsafeBytes { ScreenSocket.write(socket, $0) }
             && ScreenSocket.write(socket, UnsafeRawBufferPointer(start: y, count: yStride * height))

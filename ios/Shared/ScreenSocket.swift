@@ -1,13 +1,14 @@
 import Foundation
 
 /// How the broadcast extension hands screen frames to the app: a Unix socket
-/// in the shared App Group container. Each frame is a header of six
-/// little-endian UInt32s (magic, width, height, Y stride, UV stride, rotation)
-/// followed by the Y plane and the interleaved UV plane (NV12).
+/// in the shared App Group container. Each frame is a header of seven
+/// little-endian UInt32s (magic, width, height, Y stride, UV stride, rotation,
+/// full range 0/1) followed by the Y plane and the interleaved UV plane (NV12).
 enum ScreenSocket {
     static let appGroup = "group.app.silent"
-    static let magic: UInt32 = 0x5349_4C31 // "SIL1"
-    static let headerSize = 6 * MemoryLayout<UInt32>.size
+    static let magic: UInt32 = 0x5349_4C32 // "SIL2"
+    static let headerFields = 7
+    static let headerSize = headerFields * MemoryLayout<UInt32>.size
 
     /// `nil` when the App Group isn't available (unsigned builds).
     static var path: String? {

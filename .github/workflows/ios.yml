@@ -1,13 +1,16 @@
 name: iOS
 
 # macOS minutes are expensive on private repos, so this only runs when the
-# iOS app or the bindings change, or by hand.
+# iOS app, the bindings or the dependencies change, or by hand. Engine code
+# for phones is already built for Android on every push.
 on:
   push:
     branches: [main]
     paths:
       - "ios/**"
       - "crates/silent-ffi/**"
+      - "Cargo.lock"
+      - "third_party/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 
