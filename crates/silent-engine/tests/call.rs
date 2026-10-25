@@ -664,6 +664,43 @@ async fn speaking_is_detected_and_friends_can_be_muted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn friend_volume_changes_what_you_hear() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut beeping = settings(&relay, "Alice");
+    beeping.audio = AudioInput::TestTone;
+    let mut alice = Member::new(engine.create_room(beeping).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+    let alice_id = alice.room.me();
+    let speaking = |on: bool| {
+        move |e: &RoomEvent| match e {
+            RoomEvent::Speaking { peers } if peers.contains(&alice_id) == on => Some(()),
+            _ => None,
+        }
+    };
+    bob.until(speaking(true)).await;
+
+    // The level Bob measures is after his volume: at zero she's silent.
+    bob.room.set_friend_volume(alice_id, 0.0);
+    bob.until(speaking(false)).await;
+    let quiet = tokio::time::timeout(Duration::from_secs(2), bob.until(speaking(true))).await;
+    assert!(quiet.is_err(), "a friend at volume 0 must be silent");
+
+    bob.room.set_friend_volume(alice_id, 1.0);
+    bob.until(speaking(true)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn files_arrive_whole_and_chat_keeps_flowing() {
     let _serial = SERIAL.lock().await;
     let relay = relay().await;

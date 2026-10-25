@@ -24,7 +24,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 | `android/` | Kotlin + Jetpack Compose app, CameraX, MediaProjection | `build-native.sh` must run before Gradle. |
 | `ios/` | SwiftUI app, AVFoundation camera | XcodeGen `project.yml`; `build-native.sh` makes the XCFramework and Swift bindings (Mac only). See `ios/README.md`. |
 | `packaging/` | Icons, macOS `Info.plist`, Linux `.desktop`, `package.sh` | `package.sh` turns a release build into `dist/` (dmg, deb + tarball, zip). CI runs it. |
-| `third_party/webrtc-sys` | webrtc-sys 0.3.49 with a one-line patch (log sink at warnings, not verbose) | Patched in via `[patch.crates-io]`. Read its README before upgrading libwebrtc. |
+| `third_party/` | webrtc-sys 0.3.49 (log sink at warnings, not verbose; remote track volume) and libwebrtc 0.3.52 (exposes that volume) | Patched in via `[patch.crates-io]`. Read its README before upgrading libwebrtc. |
 | `docs/SECURITY.md` | Protocol and threat model | Update it whenever the protocol changes. |
 
 ## How a call works (short version)
@@ -42,7 +42,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 # Linux needs clang >= 21 for libwebrtc's prebuilt archive:
 export CC=clang-21 CXX=clang++-21
 
-cargo test --workspace                 # 51 tests incl. real in-process WebRTC calls (~35 s after first build)
+cargo test --workspace                 # 52 tests incl. real in-process WebRTC calls (~35 s after first build)
 cargo clippy --workspace --all-targets # must stay warning-free
 cargo fmt --all
 cargo run --release -p silent-app      # twice, to call yourself

@@ -37,6 +37,8 @@ data class Friend(
     val screen: Boolean = false,
     val words: String? = null,
     val mutedForMe: Boolean = false,
+    /** How loud they play on this phone, in percent. */
+    val volume: Int = 100,
     /** You compared safety words with them and they matched. */
     val confirmed: Boolean = false,
 )
@@ -215,6 +217,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                     friends[update.peer] = it.copy(
                         name = update.name, status = "Securing connection…", verified = true,
                         mutedForMe = returning?.mutedForMe ?: false,
+                        volume = returning?.volume ?: 100,
                     )
                 }
             }
@@ -343,6 +346,14 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         val muted = !friend.mutedForMe
         friends[peer] = friend.copy(mutedForMe = muted)
         room?.setFriendMuted(peer, muted)
+    }
+
+    /** How loud a friend plays on this phone only, 0 to 200 percent. */
+    fun setFriendVolume(peer: UInt, percent: Int) {
+        val friend = friends[peer] ?: return
+        if (friend.volume == percent) return
+        friends[peer] = friend.copy(volume = percent)
+        room?.setFriendVolume(peer, percent / 100.0)
     }
 
     fun toggleSpeaker() {

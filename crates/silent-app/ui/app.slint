@@ -14,6 +14,8 @@ export struct Tile {
     confirmed: bool,
     speaking: bool,
     muted-for-me: bool,
+    /// How loud they play for you, in percent (100 is normal).
+    volume: int,
 }
 
 export struct ChatLine {
@@ -57,6 +59,48 @@ export global Palette {
     out property <color> danger: #9b111e;
 }
 
+/// 0 to 200 percent in steps of 5, in the app's colours.
+component VolumeSlider inherits Rectangle {
+    in-out property <int> value;
+    callback changed(int);
+    min-width: 90px;
+    track := Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: #ffffff40;
+    }
+    Rectangle {
+        x: 0;
+        y: track.y;
+        width: knob.x + knob.width / 2;
+        height: track.height;
+        border-radius: 2px;
+        background: Palette.accent;
+    }
+    knob := Rectangle {
+        x: (parent.width - self.width) * min(root.value, 200) / 200;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: Palette.text;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.pick(self.mouse-x);
+            }
+        }
+        moved => { if (self.pressed) { root.pick(self.mouse-x); } }
+    }
+    function pick(x: length) {
+        root.value = Math.round(max(0, min(1, (x - knob.width / 2) / (root.width - knob.width))) * 40) * 5;
+        root.changed(root.value);
+    }
+}
+
 component PillButton inherits Rectangle {
     in property <string> label;
     in property <bool> active: false;
@@ -95,6 +139,7 @@ component VideoTile inherits Rectangle {
     callback clicked;
     callback double-clicked;
     callback mute-toggled;
+    callback volume-changed(int);
     border-radius: small ? 8px : 12px;
     clip: true;
     background: Palette.card;
@@ -160,25 +205,57 @@ component VideoTile inherits Rectangle {
         }
     }
 
-    // Mute a friend for yourself only.
-    Rectangle {
-        visible: !tile.is-me && tile.kind == "camera" && !root.small && (touch.has-hover || mute.has-hover || tile.muted-for-me);
+    // Mute a friend or change their volume, for yourself only.
+    TouchArea {
+        visible: !tile.is-me && tile.kind == "camera" && !root.small && (touch.has-hover || self.has-hover || tile.muted-for-me);
         x: parent.width - self.width - 10px;
         y: 10px;
-        height: 26px;
-        width: mute-label.preferred-width + 20px;
-        border-radius: 13px;
-        background: tile.muted-for-me ? Palette.danger : mute.has-hover ? #000000e0 : #000000b0;
-        mute-label := Text {
-            text: tile.muted-for-me ? "Muted for you" : "Mute for me";
-            color: Palette.text;
-            font-size: 12px;
-            vertical-alignment: center;
-            horizontal-alignment: center;
-        }
-        mute := TouchArea {
-            mouse-cursor: pointer;
-            clicked => { root.mute-toggled(); }
+        width: 170px;
+        height: column.preferred-height;
+        column := VerticalLayout {
+            spacing: 6px;
+            alignment: start;
+            HorizontalLayout {
+                alignment: end;
+                Rectangle {
+                    height: 26px;
+                    width: mute-label.preferred-width + 20px;
+                    border-radius: 13px;
+                    background: tile.muted-for-me ? Palette.danger : mute.has-hover ? #000000e0 : #000000b0;
+                    mute-label := Text {
+                        text: tile.muted-for-me ? "Muted for you" : "Mute for me";
+                        color: Palette.text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                    mute := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.mute-toggled(); }
+                    }
+                }
+            }
+            if !tile.muted-for-me: Rectangle {
+                height: 30px;
+                border-radius: 15px;
+                background: #000000b0;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    Text {
+                        text: volume.value + "%";
+                        width: 34px;
+                        color: Palette.text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    volume := VolumeSlider {
+                        value: tile.volume;
+                        changed(v) => { root.volume-changed(v); }
+                    }
+                }
+            }
         }
     }
 }
@@ -374,6 +451,7 @@ component Room inherits Rectangle {
     in-out property <string> draft;
     callback tile-clicked(string);
     callback mute-friend(string);
+    callback friend-volume(string, int);
     callback toggle-fullscreen;
     callback toggle-mic;
     callback toggle-camera;
@@ -490,6 +568,7 @@ component Room inherits Rectangle {
                     clicked => { root.tile-clicked(t.key); }
                     double-clicked => { root.toggle-fullscreen(); }
                     mute-toggled => { root.mute-friend(t.key); }
+                    volume-changed(v) => { root.friend-volume(t.key, v); }
                 }
             }
 
@@ -672,6 +751,7 @@ export component AppWindow inherits Window {
     callback stats-opened;
     callback tile-clicked(string);
     callback mute-friend(string);
+    callback friend-volume(string, int);
     callback unfocus-tile;
     callback confirm-words(int);
     callback push-to-talk-held(bool);
@@ -791,6 +871,7 @@ export component AppWindow inherits Window {
             root.tile-clicked(key);
         }
         mute-friend(key) => { root.mute-friend(key); }
+        friend-volume(key, v) => { root.friend-volume(key, v); }
         toggle-fullscreen => { root.full-screen = !root.full-screen; }
       }
     }

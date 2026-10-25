@@ -349,6 +349,12 @@ impl SilentRoom {
         self.with_room(|r| r.set_friend_muted(peer, muted));
     }
 
+    /// How loud a friend plays on this device: 1.0 normal, 0.0 silent, up to
+    /// 2.0. Kept if they reconnect.
+    pub fn set_friend_volume(&self, peer: u32, volume: f64) {
+        self.with_room(|r| r.set_friend_volume(peer, volume));
+    }
+
     /// Call when the phone switched networks, so calls move over at once.
     pub fn restart_connections(&self) {
         self.with_room(|r| r.restart_connections());

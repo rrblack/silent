@@ -86,6 +86,8 @@ struct RoomView: View {
     @State private var showChat = false
     @State private var showVerify = false
     @State private var showStats = false
+    /// The friend whose volume sheet is open.
+    @State private var adjusting: UInt32?
     @State private var draft = ""
     @State private var picking = false
     @State private var saving: (name: String, blob: FileBlob)?
@@ -155,6 +157,7 @@ struct RoomView: View {
         .sheet(isPresented: $showChat) { chat }
         .sheet(isPresented: $showVerify) { verify }
         .sheet(isPresented: $showStats) { stats }
+        .sheet(isPresented: Binding(get: { adjusting != nil }, set: { if !$0 { adjusting = nil } })) { sound }
     }
 
     @ViewBuilder
@@ -194,6 +197,7 @@ struct RoomView: View {
                 Button(friend.mutedForMe ? "Unmute for me" : "Mute for me") {
                     model.toggleMute(friend: friend.id)
                 }
+                Button("Volume…") { adjusting = friend.id }
             }
         }
     }
@@ -313,6 +317,34 @@ struct RoomView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.panel.ignoresSafeArea())
+    }
+
+    /// Mute for me and the volume of one friend, on this phone only.
+    private var sound: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let id = adjusting, let friend = model.friends[id] {
+                Text(friend.name).font(.headline)
+                Text("Only you hear the difference.").font(.footnote).foregroundColor(Palette.subtext)
+                Toggle("Mute for me", isOn: Binding(
+                    get: { friend.mutedForMe },
+                    set: { _ in model.toggleMute(friend: id) }
+                ))
+                Text("Volume \(friend.volume)%")
+                Slider(
+                    value: Binding(
+                        get: { Double(friend.volume) },
+                        set: { model.setVolume(friend: id, percent: Int(($0 / 5).rounded()) * 5) }
+                    ),
+                    in: 0 ... 200
+                )
+                .disabled(friend.mutedForMe)
+            }
+            Spacer()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.panel.ignoresSafeArea())
+        .presentationDetents([.medium])
     }
 
     private var stats: some View {

@@ -72,6 +72,12 @@ void AudioTrack::add_sink(const std::shared_ptr<NativeAudioSink>& sink) const {
   sinks_.push_back(sink);
 }
 
+void AudioTrack::set_volume(double volume) const {
+  if (webrtc::AudioSourceInterface* source = track()->GetSource()) {
+    source->SetVolume(volume);
+  }
+}
+
 void AudioTrack::remove_sink(
     const std::shared_ptr<NativeAudioSink>& sink) const {
   webrtc::MutexLock lock(&mutex_);

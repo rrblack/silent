@@ -13,6 +13,8 @@ struct Friend: Identifiable {
     var screen = false
     var words: String?
     var mutedForMe = false
+    /// How loud they play on this phone, in percent.
+    var volume = 100
     /// You compared safety words with them and they matched.
     var confirmed = false
 }
@@ -281,6 +283,13 @@ final class RoomModel: ObservableObject {
         room?.setFriendMuted(peer: peer, muted: friend.mutedForMe)
     }
 
+    /// How loud a friend plays on this phone only, 0 to 200 percent.
+    func setVolume(friend peer: UInt32, percent: Int) {
+        guard let friend = friends[peer], friend.volume != percent else { return }
+        friends[peer]?.volume = percent
+        room?.setFriendVolume(peer: peer, volume: Double(percent) / 100)
+    }
+
     func flipCamera() {
         frontCamera.toggle()
         if cameraOn {
@@ -328,6 +337,7 @@ final class RoomModel: ObservableObject {
             if let old = replaces, let previous = friends.removeValue(forKey: old) {
                 returning = true
                 friends[peer]?.mutedForMe = previous.mutedForMe
+                friends[peer]?.volume = previous.volume
             }
             if let old = replaces {
                 frames[TileKey(peer: old, screen: false)] = nil

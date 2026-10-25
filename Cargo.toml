@@ -48,3 +48,4 @@ strip = "debuginfo"
 # third_party/README.md).
 [patch.crates-io]
 webrtc-sys = { path = "third_party/webrtc-sys" }
+libwebrtc = { path = "third_party/libwebrtc" }

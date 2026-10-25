@@ -20,7 +20,7 @@ pub use media::{
     AudioDevice, AudioDevices, AudioInput, CameraProfile, CameraTarget, ScreenProfile,
     ScreenTarget, VideoInput, VideoKind,
 };
-pub use room::{FileTooLarge, Room, RoomEvent, Settings};
+pub use room::{FileTooLarge, Room, RoomEvent, Settings, MAX_FRIEND_VOLUME};
 pub use signaling::SignalError;
 pub use silent_core::proto::MediaState;
 pub use silent_core::PeerId;

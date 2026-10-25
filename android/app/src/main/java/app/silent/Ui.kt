@@ -54,6 +54,8 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -82,6 +84,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.view.ViewGroup
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 object Palette {
     val bg = Color(0xFF070707)
@@ -369,6 +372,8 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
         is TileModel.Remote -> tile.friend.id in vm.speaking
     }
     val friend = (tile as? TileModel.Remote)?.friend?.takeIf { !screen }
+    var adjusting by remember { mutableStateOf(false) }
+    if (adjusting && friend != null) FriendSound(vm, friend) { adjusting = false }
     Box(
         Modifier
             .fillMaxWidth()
@@ -381,9 +386,9 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
                 RoundedCornerShape(12.dp),
             )
             .then(
-                // Long press silences a friend for you only.
+                // Long press: mute or turn down a friend, for you only.
                 if (friend != null) {
-                    Modifier.combinedClickable(onClick = {}, onLongClick = { vm.toggleMuteFriend(friend.id) })
+                    Modifier.combinedClickable(onClick = {}, onLongClick = { adjusting = true })
                 } else {
                     Modifier
                 },
@@ -434,6 +439,48 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
                 .padding(horizontal = 8.dp, vertical = 3.dp),
         )
     }
+}
+
+/** Mute for me and the volume of one friend, on this phone only. */
+@Composable
+private fun FriendSound(vm: RoomViewModel, friend: Friend, onDone: () -> Unit) {
+    // The dialog shows the live friend, so it follows a mute from elsewhere.
+    val live = vm.friends[friend.id] ?: friend
+    var volume by remember { mutableStateOf(live.volume.toFloat()) }
+    AlertDialog(
+        onDismissRequest = onDone,
+        confirmButton = { TextButton(onClick = onDone) { Text("Done", color = Palette.accent) } },
+        title = { Text(live.name) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Only you hear the difference.", color = Palette.subtext, fontSize = 13.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Mute for me", color = Palette.text, modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = live.mutedForMe,
+                        onCheckedChange = { vm.toggleMuteFriend(friend.id) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Palette.accent),
+                    )
+                }
+                Text("Volume ${volume.toInt()}%", color = Palette.text)
+                Slider(
+                    value = volume,
+                    onValueChange = {
+                        volume = (it / 5).roundToInt() * 5f
+                        vm.setFriendVolume(friend.id, volume.toInt())
+                    },
+                    valueRange = 0f..200f,
+                    enabled = !live.mutedForMe,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Palette.text,
+                        activeTrackColor = Palette.accent,
+                        inactiveTrackColor = Palette.border,
+                    ),
+                )
+            }
+        },
+        containerColor = Palette.panel,
+    )
 }
 
 @Composable

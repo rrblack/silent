@@ -50,6 +50,8 @@ use crate::signaling::{self, SignalError, SignalLink, Welcome};
 use crate::stats::{self, PeerStats};
 
 const START_BITRATE_BPS: u64 = 1_200_000;
+/// The loudest [`Room::set_friend_volume`] allows: 200 %.
+pub const MAX_FRIEND_VOLUME: f64 = 2.0;
 /// A connection that reports "disconnected" often recovers by itself within
 /// a few seconds; only then is ICE restarted.
 const DISCONNECT_GRACE: Duration = Duration::from_secs(3);
@@ -179,6 +181,7 @@ enum Command {
     Screen(Option<ScreenTarget>),
     Restart,
     MuteFriend(PeerId, bool),
+    FriendVolume(PeerId, f64),
     SendFile(String, Arc<[u8]>),
     Stats(oneshot::Sender<Vec<PeerStats>>),
     Leave(oneshot::Sender<()>),
@@ -380,6 +383,17 @@ impl Room {
         let _ = self.commands.send(Command::MuteFriend(peer, muted));
     }
 
+    /// Sets how loud a friend plays for you only: 1.0 is normal, 0.0 silent,
+    /// up to [`MAX_FRIEND_VOLUME`] (louder clips). Kept if they reconnect.
+    pub fn set_friend_volume(&self, peer: PeerId, volume: f64) {
+        let volume = if volume.is_finite() {
+            volume.clamp(0.0, MAX_FRIEND_VOLUME)
+        } else {
+            1.0
+        };
+        let _ = self.commands.send(Command::FriendVolume(peer, volume));
+    }
+
     /// Restarts ICE on every connection. Call it when the device switched
     /// networks (Wi-Fi to mobile data, say) so calls move over right away
     /// instead of after they time out.
@@ -482,6 +496,8 @@ struct Peer {
     recover_generation: u64,
     remote_audio: Option<RtcAudioTrack>,
     muted_for_me: bool,
+    /// Playback volume set with [`Room::set_friend_volume`]; `None` is normal.
+    volume: Option<f64>,
     video_senders: Vec<(VideoKind, RtpSender)>,
 }
 
@@ -535,6 +551,16 @@ struct Incoming {
     name: String,
     size: u64,
     data: Vec<u8>,
+}
+
+impl Peer {
+    /// Applies Mute for me and the volume to their audio.
+    fn apply_audio(&self) {
+        if let Some(audio) = &self.remote_audio {
+            audio.set_enabled(!self.muted_for_me);
+            audio.set_volume(self.volume.unwrap_or(1.0));
+        }
+    }
 }
 
 impl Drop for Peer {
@@ -971,9 +997,8 @@ impl Actor {
                     }
                     if let Some(p) = self.peers.get_mut(&from) {
                         p.muted_for_me = old.muted_for_me;
-                        if let Some(audio) = &p.remote_audio {
-                            audio.set_enabled(!p.muted_for_me);
-                        }
+                        p.volume = old.volume;
+                        p.apply_audio();
                     }
                 }
                 self.emit(RoomEvent::PeerVerified {
@@ -1456,8 +1481,8 @@ impl Actor {
                 }
                 MediaStreamTrack::Audio(track) => {
                     if let Some(p) = self.peers.get_mut(&peer) {
-                        track.set_enabled(!p.muted_for_me);
                         p.remote_audio = Some(track);
+                        p.apply_audio();
                     }
                 }
             },
@@ -1695,9 +1720,13 @@ impl Actor {
             Command::MuteFriend(peer, muted) => {
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.muted_for_me = muted;
-                    if let Some(audio) = &p.remote_audio {
-                        audio.set_enabled(!muted);
-                    }
+                    p.apply_audio();
+                }
+            }
+            Command::FriendVolume(peer, volume) => {
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    p.volume = Some(volume);
+                    p.apply_audio();
                 }
             }
             Command::Restart => {

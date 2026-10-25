@@ -96,6 +96,8 @@ struct PeerView {
     words: Option<String>,
     verified: bool,
     muted_for_me: bool,
+    /// Their volume for you, in percent.
+    volume: i32,
     /// The user said the safety words matched.
     confirmed: bool,
 }
@@ -291,6 +293,7 @@ impl UiState {
             confirmed: self.peers.get(&peer).is_some_and(|p| p.confirmed),
             speaking: kind == VideoKind::Camera && self.speaking.contains(&peer),
             muted_for_me: self.peers.get(&peer).is_some_and(|p| p.muted_for_me),
+            volume: self.peers.get(&peer).map_or(100, |p| p.volume),
         }
     }
 
@@ -433,6 +436,7 @@ impl UiState {
                     words: None,
                     verified: false,
                     muted_for_me: false,
+                    volume: 100,
                     confirmed: false,
                 };
                 self.peers.insert(peer, view);
@@ -454,8 +458,9 @@ impl UiState {
                     p.name = name;
                     p.status = "Securing connection…";
                     p.verified = true;
-                    // The engine keeps a friend muted across a reconnect.
-                    p.muted_for_me = returning.is_some_and(|old| old.muted_for_me);
+                    // The engine keeps a friend's mute and volume across a reconnect.
+                    p.muted_for_me = returning.as_ref().is_some_and(|old| old.muted_for_me);
+                    p.volume = returning.as_ref().map_or(100, |old| old.volume);
                 }
             }
             RoomEvent::PeerWrongCode { peer } => {
@@ -1024,6 +1029,22 @@ fn main() -> anyhow::Result<()> {
                 with_room(|r| r.set_friend_muted(peer, muted));
             }
             s.rebuild();
+        })
+    });
+
+    window.on_friend_volume(|key, volume| {
+        let Some(peer) = key.split(':').next().and_then(|p| p.parse::<PeerId>().ok()) else {
+            return;
+        };
+        ui(|s| {
+            if let Some(p) = s.peers.get_mut(&peer) {
+                // The slider shows the new value itself; rebuilding the tiles
+                // mid-drag would end the drag.
+                if p.volume != volume {
+                    p.volume = volume;
+                    with_room(|r| r.set_friend_volume(peer, f64::from(volume) / 100.0));
+                }
+            }
         })
     });
 
