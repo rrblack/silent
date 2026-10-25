@@ -1,6 +1,6 @@
 # Silent: handoff
 
-The state of the project, how to pick it up, and what to do next. First written at the end of the first build session (October 2026), updated after the second (reconnecting, hardware video, desktop UI, installers, iOS skeleton). For Kyle and the next Claude session. Read [CLAUDE.md](CLAUDE.md) for the architecture and rules.
+The state of the project, how to pick it up, and what to do next. First written at the end of the first build session (October 2026), updated after the second (reconnecting, hardware video, desktop UI, installers, iOS skeleton) and the third (speaking ring, files, squatting defence, volume, sounds, connection quality, computer audio, a memory leak under load). For Kyle and the next Claude session. Read [CLAUDE.md](CLAUDE.md) for the architecture and rules.
 
 ## 1. Where things stand
 
@@ -9,7 +9,7 @@ The state of the project, how to pick it up, and what to do next. First written 
 | Crypto and protocol (`silent-core`, protocol v3) | ✅ | 26 unit tests | Independent security review |
 | Rust relay (`silent-relay`) | ✅ | 9 protocol tests, incl. the join budget and evicting wrong-code peers | |
 | Cloudflare Worker relay (`signal/`) | ✅ | Same 9 tests against `wrangler dev`, plus all 12 call tests through it | Deployed? Check section 4 |
-| Call engine (`silent-engine`, protocol v3) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, relay dropping mid-call and coming back, ICE restart, H.264 negotiation, **speaking detection and mute-for-me**, **3 MiB file transfer with chat flowing alongside** | Real networks, NAT, TURN, a real network switch |
+| Call engine (`silent-engine`, protocol v3) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, relay dropping mid-call and coming back, ICE restart, H.264 negotiation, **speaking detection and mute-for-me**, **per-friend volume**, **computer audio on its own track**, **3 MiB file transfer with chat flowing alongside**. With the desktop app and bots: a 5 MB file under 10 % packet loss, and six-minute four-person calls (cameras, and a 1080p60 screen share) with steady memory | Real networks, NAT, TURN, a real network switch |
 | Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me and the volume slider, a received image shown in chat with Save**, the join chime (captured through an ALSA file sink), the taskbar alert (the X11 urgency hint), and "weak connection" on a friend's tile under 20 % packet loss (iptables), gone again once the loss stops; "Reconnecting…" over the frozen picture when all UDP is blocked, and the call coming back; a six-minute call of the app and three bots with steady memory | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
 | Installers | ✅ | CI builds a Windows zip (exe with icon), macOS dmg (.app with permission texts, ad hoc signed), Linux .deb and tarball; the .deb was inspected locally | Installing them on real machines |
 | Android app | ✅ | APK builds locally and in CI | **Never run on a phone** |
