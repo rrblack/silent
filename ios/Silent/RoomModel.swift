@@ -1,4 +1,3 @@
-import AudioToolbox
 import AVFoundation
 import Foundation
 import Network
@@ -82,6 +81,8 @@ final class RoomModel: ObservableObject {
     /// Received files, in memory only, until the room is left.
     private(set) var files: [String: (name: String, data: Data)] = [:]
     private var sentFiles = 0
+    /// Kept so the chime isn't cut off when the player would be freed.
+    private var chimePlayer: AVAudioPlayer?
     /// The listener of the room being opened or in use; callbacks from any
     /// other (a room already left) are dropped.
     private var listener: Listener?
@@ -115,6 +116,16 @@ final class RoomModel: ObservableObject {
             relayUrl: relay, name: name, cameraHigh: cameraHigh,
             screenDetail: false, relayOnly: relayOnly, useAudio: true
         )
+        // Reset before the room starts: its first events (friends already
+        // there) can arrive before `entered`.
+        speaking = []
+        micOn = true
+        cameraOn = false
+        notice = ""
+        friends = [:]
+        chat = []
+        frames = [:]
+        files = [:]
         let listener = Listener(model: self)
         self.listener = listener
         DispatchQueue.global(qos: .userInitiated).async {
@@ -142,14 +153,6 @@ final class RoomModel: ObservableObject {
         self.created = created
         code = room.code()
         me = room.me()
-        speaking = []
-        micOn = true
-        cameraOn = false
-        notice = ""
-        friends = [:]
-        chat = []
-        frames = [:]
-        files = [:]
         camera.attach(room)
         camera.onFailure = { [weak self] in self?.cameraFailed() }
         screenOn = false
@@ -244,8 +247,11 @@ final class RoomModel: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            let data = size <= maxFileBytes ? (try? Data(contentsOf: url)) : nil
+            // Read at most one byte past the limit, in case the size is unknown.
+            let handle = try? FileHandle(forReadingFrom: url)
+            let read: Data? = (try? handle?.read(upToCount: maxFileBytes + 1)) ?? nil
+            try? handle?.close()
+            let data = read.flatMap { $0.count <= maxFileBytes ? $0 : nil }
             let result = Result<Void, Error> {
                 if let data { try room.sendFile(name: fileName, data: data) }
             }
@@ -327,11 +333,11 @@ final class RoomModel: ObservableObject {
         }
     }
 
-    /// The system's begin and end recording sounds for a friend joining or
-    /// leaving.
+    /// A rising chime when a friend joins, a falling one when they leave.
     private func chime(joined: Bool) {
         guard sounds else { return }
-        AudioServicesPlaySystemSound(joined ? 1113 : 1114)
+        chimePlayer = try? AVAudioPlayer(data: joined ? Chime.joined : Chime.left)
+        chimePlayer?.play()
     }
 
     private func system(_ text: String) {

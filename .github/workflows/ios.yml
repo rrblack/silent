@@ -9,7 +9,9 @@ on:
     paths:
       - "ios/**"
       - "crates/silent-ffi/**"
+      - "Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/**"
       - "third_party/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:

@@ -1653,10 +1653,15 @@ impl Actor {
             .into_iter()
             .chain(peers.into_iter().filter_map(|(id, pulse)| {
                 let level = pulse.received?;
-                self.peers
+                let p = self
+                    .peers
                     .get(&id)
-                    .is_some_and(|p| p.verified && !p.muted_for_me)
-                    .then_some((id, level))
+                    .filter(|p| p.verified && !p.muted_for_me)?;
+                // The level is measured after the volume set for them; undo
+                // it, so a friend turned down still shows as talking (at 0
+                // they're silent, like Mute for me).
+                let volume = p.volume.unwrap_or(1.0);
+                Some((id, if volume > 0.0 { level / volume } else { 0.0 }))
             }));
         for (id, level) in heard {
             if level >= SPEAKING_LEVEL {

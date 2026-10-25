@@ -80,7 +80,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
 3. **Phone:** install `app-debug.apk` and grant the camera, microphone and notification permissions. Set Settings → Relay server to `http://192.168.1.23:8787`, then join with the code.
 4. Check each of these:
    - [ ] Voice both ways, with no echo on speakers. The speaker button switches between loudspeaker and earpiece (a headset always wins).
-   - [ ] The phone camera shows upright on the PC.
+   - [ ] The phone camera shows upright on the PC, with natural colours (if blacks look crushed and colours too strong, the camera's YUV is full range and needs scaling like iOS screen frames do).
    - [ ] Screen share works in both directions.
    - [ ] Chat works.
    - [ ] Verify words match on both screens.
@@ -139,7 +139,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 - **Rejoining after a relay outage starts every pair over.** New keys mean new safety words; compare them again if it matters.
 - **Room squatting and join spam.** Someone who joins with a wrong code is now removed automatically by the people who were there first, but can rejoin until the per-room join budget runs out, and a join spammer can keep dropped friends from rejoining for a minute. See `docs/SECURITY.md`.
 - **Android:** first run on a device is untested. Remote video is capped at 30 fps and 960 px for camera tiles, by design for battery.
-- **iOS:** only built for the simulator so far. Screen sharing needs a signed build (App Group), and there's no CallKit yet. The bundle ids `app.silent`, `app.silent.broadcast` and the App Group `group.app.silent` must be registrable under the owner's Apple team; if not, rename them together in `ios/project.yml`, `ScreenSocket.appGroup` and `BroadcastButton.preferredExtension`. Camera rotation follows how the phone is held, untested on a device. The join and leave sounds are system sounds, which iOS may keep quiet during a call.
+- **iOS:** only built for the simulator so far. Screen sharing needs a signed build (App Group), and there's no CallKit yet. The bundle ids `app.silent`, `app.silent.broadcast` and the App Group `group.app.silent` must be registrable under the owner's Apple team; if not, rename them together in `ios/project.yml`, `ScreenSocket.appGroup` and `BroadcastButton.preferredExtension`. Camera rotation follows how the phone is held, untested on a device. The join and leave chimes play through AVAudioPlayer next to the call, untested.
 
 ## 6. Next steps, in order
 
@@ -163,7 +163,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 | Relay URL | free `*.workers.dev` or a custom domain | Gets baked into every build. |
 | Remember settings locally? | no (current) / name, relay URL and device choices only | Convenience vs. the "nothing stored" promise. Not built, on purpose, until you decide. |
 | Code signing | Azure Trusted Signing (~$10/mo), Apple Developer ($99/yr) | Removes install warnings; Apple's is required for iOS. |
-| Public or private | | CI minutes: private repos get 2,000 free minutes a month, and each macOS minute counts as 10. Every push to `main` builds the macOS app (~5 min, so ~50 minutes of the budget); the iOS workflow only runs when `ios/`, `crates/silent-ffi`, `Cargo.lock` or `third_party/` change. Public repos build for free. |
+| Public or private | | CI minutes: private repos get 2,000 free minutes a month, and each macOS minute counts as 10. Every push to `main` builds the macOS app (~5 min, so ~50 minutes of the budget); the iOS workflow only runs when `ios/`, `crates/silent-ffi`, the workspace `Cargo.toml`/`Cargo.lock`, `.cargo/` or `third_party/` change. Public repos build for free. |
 
 ## 8. How to start the next Claude session
 

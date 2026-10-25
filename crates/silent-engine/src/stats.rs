@@ -135,6 +135,10 @@ pub(crate) struct QualityMeter {
     worst_rtt_ms: f64,
     quality: Quality,
     good_windows: u32,
+    /// Audio has flowed since the last reset: from then on, a window with
+    /// no packets at all means the connection is down, not silence (Opus
+    /// keeps sending in silence, just smaller packets).
+    flowing: bool,
 }
 
 impl QualityMeter {
@@ -157,13 +161,15 @@ impl QualityMeter {
         }
         let got = received.saturating_sub(received0) as i64;
         let missed = (lost - lost0).max(0);
-        let lossy = got + missed >= QUALITY_MIN_PACKETS
-            && missed as f64 / (got + missed) as f64 >= POOR_LOSS;
+        let judged = got + missed >= QUALITY_MIN_PACKETS;
+        let lossy = judged && missed as f64 / (got + missed) as f64 >= POOR_LOSS;
+        let stalled = self.flowing && got == 0;
+        self.flowing |= judged;
         let slow = self.worst_rtt_ms >= POOR_RTT_MS;
         self.window = Some((now, received, lost));
         self.worst_rtt_ms = rtt_ms.unwrap_or(0.0);
 
-        let next = if lossy || slow {
+        let next = if lossy || stalled || slow {
             self.good_windows = 0;
             Quality::Poor
         } else {
@@ -184,6 +190,7 @@ impl QualityMeter {
     /// lost during the outage say nothing about the connection now.
     pub fn reset(&mut self) {
         self.window = None;
+        self.flowing = false;
     }
 }
 
@@ -321,6 +328,17 @@ mod tests {
         );
         assert_eq!(
             run(&mut meter, &mut clock, 4, 50, 0.0, 800.0),
+            [Quality::Poor]
+        );
+    }
+
+    #[test]
+    fn audio_that_stops_coming_is_poor() {
+        let mut meter = QualityMeter::default();
+        let mut clock = (Instant::now(), 0, 0);
+        assert!(run(&mut meter, &mut clock, 4, 50, 0.0, 40.0).is_empty());
+        assert_eq!(
+            run(&mut meter, &mut clock, 4, 0, 0.0, 40.0),
             [Quality::Poor]
         );
     }

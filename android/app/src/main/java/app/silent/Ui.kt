@@ -427,6 +427,12 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
                         contentScale = if (tile.screen) ContentScale.Fit else ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )
+                    // Over a frozen picture while the connection recovers.
+                    if (f.status.isNotEmpty()) {
+                        Box(Modifier.fillMaxSize().background(Color(0xA0000000)), contentAlignment = Alignment.Center) {
+                            Text(f.status, color = Palette.text, fontSize = 13.sp)
+                        }
+                    }
                 } else {
                     Avatar(f.name, f.status)
                 }

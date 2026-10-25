@@ -159,6 +159,10 @@ struct RoomView: View {
         .sheet(isPresented: $showVerify) { verify }
         .sheet(isPresented: $showStats) { stats }
         .sheet(isPresented: Binding(get: { adjusting != nil }, set: { if !$0 { adjusting = nil } })) { sound }
+        // Close the volume sheet when that friend leaves or reconnects (new id).
+        .onReceive(model.$friends) { friends in
+            if let id = adjusting, friends[id] == nil { adjusting = nil }
+        }
     }
 
     @ViewBuilder
@@ -176,6 +180,12 @@ struct RoomView: View {
             case .friend(let friend, let screen):
                 if let image = model.frames[TileKey(peer: friend.id, screen: screen)] {
                     Image(uiImage: image).resizable().aspectRatio(contentMode: screen ? .fit : .fill)
+                    // Over a frozen picture while the connection recovers.
+                    if !friend.status.isEmpty {
+                        Color.black.opacity(0.6)
+                        Text(friend.status).font(.footnote).foregroundColor(Palette.text)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 } else {
                     avatar(friend.name, status: friend.status)
                 }

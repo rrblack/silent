@@ -345,7 +345,24 @@ impl UiState {
         if focus_index.is_none() {
             self.focus = None;
         }
-        self.tiles.set_vec(tiles);
+        // Same tiles in the same order: update rows in place. Replacing the
+        // whole model makes Slint recreate every tile, which ends a volume
+        // drag or hover each time someone starts talking.
+        let same_tiles = self.tiles.row_count() == tiles.len()
+            && self
+                .tiles
+                .iter()
+                .zip(&tiles)
+                .all(|(old, new)| old.key == new.key);
+        if same_tiles {
+            for (i, tile) in tiles.into_iter().enumerate() {
+                if self.tiles.row_data(i).as_ref() != Some(&tile) {
+                    self.tiles.set_row_data(i, tile);
+                }
+            }
+        } else {
+            self.tiles.set_vec(tiles);
+        }
 
         let verifications: Vec<Verification> = self
             .peers
@@ -426,7 +443,15 @@ impl UiState {
     /// Plays `chime` unless sounds are off in Settings.
     fn chime(&self, chime: sounds::Chime) {
         if self.window.upgrade().is_some_and(|w| w.get_sounds()) {
-            sounds::play(chime);
+            let speaker = DEVICES.with(|d| {
+                let d = d.borrow();
+                let id = d.speaker.as_ref()?;
+                d.speakers
+                    .iter()
+                    .find(|s| &s.id == id)
+                    .map(|s| s.name.clone())
+            });
+            sounds::play(chime, speaker);
         }
     }
 
@@ -1073,8 +1098,7 @@ fn main() -> anyhow::Result<()> {
         };
         ui(|s| {
             if let Some(p) = s.peers.get_mut(&peer) {
-                // The slider shows the new value itself; rebuilding the tiles
-                // mid-drag would end the drag.
+                // The slider already shows the new value.
                 if p.volume != volume {
                     p.volume = volume;
                     with_room(|r| r.set_friend_volume(peer, f64::from(volume) / 100.0));

@@ -167,6 +167,24 @@ struct CameraPreview: UIViewRepresentable {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
 
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            // The preview's connection only exists once the camera runs, which
+            // can be after the first layout.
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(sessionStarted),
+                name: .AVCaptureSessionDidStartRunning, object: nil
+            )
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("not used from storyboards")
+        }
+
+        @objc private func sessionStarted() {
+            DispatchQueue.main.async { self.setNeedsLayout() }
+        }
+
         /// Keeps the self view upright when the screen rotates (the two
         /// orientation enums share raw values).
         override func layoutSubviews() {

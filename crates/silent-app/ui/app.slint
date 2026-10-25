@@ -161,6 +161,18 @@ component VideoTile inherits Rectangle {
         image-fit: tile.kind == "screen" ? contain : cover;
     }
 
+    // Over a frozen picture while the connection recovers.
+    if tile.has-video && tile.status != "": Rectangle {
+        background: #000000a0;
+        Text {
+            text: tile.status;
+            color: Palette.text;
+            font-size: root.small ? 11px : 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
     if !tile.has-video: VerticalLayout {
         alignment: center;
         spacing: 10px;
@@ -214,6 +226,9 @@ component VideoTile inherits Rectangle {
         y: 10px;
         width: 170px;
         height: column.preferred-height;
+        // Clicks beside the controls still belong to the tile.
+        clicked => { root.clicked(); }
+        double-clicked => { root.double-clicked(); }
         column := VerticalLayout {
             spacing: 6px;
             alignment: start;

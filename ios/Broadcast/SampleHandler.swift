@@ -10,6 +10,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private let queue = DispatchQueue(label: "silent.broadcast")
     private let lock = NSLock()
     private var busy = false
+    /// The broadcast ended (stopped by the user or failed); nothing more is
+    /// sent or reported.
+    private var finished = false
     private var lastFrame = Date.distantPast
 
     override func broadcastStarted(withSetupInfo _: [String: NSObject]?) {
@@ -38,6 +41,9 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastFinished() {
+        lock.lock()
+        finished = true
+        lock.unlock()
         if socket >= 0 { shutdown(socket, SHUT_RDWR) }
         queue.sync {
             if socket >= 0 { close(socket) }
@@ -52,7 +58,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         // At most 30 frames a second, and never queue up behind a slow app.
         let now = Date()
         lock.lock()
-        let take = !busy && now.timeIntervalSince(lastFrame) >= 1.0 / 30
+        let take = !finished && !busy && now.timeIntervalSince(lastFrame) >= 1.0 / 30
         if take {
             busy = true
             lastFrame = now
@@ -67,7 +73,11 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 self.lock.unlock()
             }
             if !self.send(buffer, rotation: rotation) {
-                self.fail("Silent stopped receiving the screen.")
+                self.lock.lock()
+                let report = !self.finished
+                self.finished = true
+                self.lock.unlock()
+                if report { self.fail("Silent stopped receiving the screen.") }
             }
         }
     }

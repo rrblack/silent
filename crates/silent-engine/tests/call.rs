@@ -696,7 +696,8 @@ async fn friend_volume_changes_what_you_hear() {
     let quiet = tokio::time::timeout(Duration::from_secs(2), bob.until(speaking(true))).await;
     assert!(quiet.is_err(), "a friend at volume 0 must be silent");
 
-    bob.room.set_friend_volume(alice_id, 1.0);
+    // Turned far down she's quiet, but still shows as talking.
+    bob.room.set_friend_volume(alice_id, 0.05);
     bob.until(speaking(true)).await;
 }
 
