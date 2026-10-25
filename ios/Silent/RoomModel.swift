@@ -55,6 +55,10 @@ final class RoomModel: ObservableObject {
     @Published var relayUrl = RoomModel.bakedRelay
     @Published var relayOnly = false
     @Published var sounds = true
+    /// Send the phone's app audio with a screen share.
+    @Published var shareAudio = true {
+        didSet { screen.shareAudio = shareAudio }
+    }
     @Published var cameraHigh = false
     @Published var busy = false
     @Published var error = ""

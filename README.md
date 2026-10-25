@@ -7,7 +7,7 @@ No accounts, nothing stored. Share a code like `4071-amber-falcon-river` and you
 - **End to end.** Codes are never sent anywhere. Peers prove they know the code with a PAKE (SPAKE2), seal all signaling with the resulting keys, and use that to authenticate the DTLS media connection. The relay only ever sees a room number and ciphertext. Safety words let friends confirm nobody is in the middle.
 - **Native.** Rust and libwebrtc, with a Slint UI on Windows, macOS and Linux, Jetpack Compose on Android and SwiftUI on iOS (early).
 - **Keeps going.** Calls ride out network switches (ICE restart) and relay outages (the room rejoins by itself while media stays peer to peer).
-- **For friends, not meetings.** Share your screen with its sound (Windows, Android), send files and images, turn one friend down or mute them just for you, see who's talking and whose connection is weak, push to talk, a chime when someone joins.
+- **For friends, not meetings.** Share your screen with its sound (Windows, Android, iOS), send files and images, turn one friend down or mute them just for you, see who's talking and whose connection is weak, push to talk, a chime when someone joins.
 
 See [docs/SECURITY.md](docs/SECURITY.md) for the protocol and threat model, and [HANDOFF.md](HANDOFF.md) for the current state and the testing plan.
 

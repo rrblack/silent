@@ -7,6 +7,22 @@ import SwiftUI
 final class ScreenReceiver {
     /// Called on the main thread when sharing starts or stops.
     var onSharing: ((Bool) -> Void)?
+    /// Send the phone's app audio along with the screen.
+    var shareAudio: Bool {
+        get {
+            audioLock.lock()
+            defer { audioLock.unlock() }
+            return audioOn
+        }
+        set {
+            audioLock.lock()
+            audioOn = newValue
+            audioLock.unlock()
+        }
+    }
+
+    private let audioLock = NSLock()
+    private var audioOn = true
 
     private var session: Session?
 
@@ -26,6 +42,7 @@ final class ScreenReceiver {
             return
         }
         let session = Session(listener: fd, room: room)
+        session.shareAudio = { [weak self] in self?.shareAudio ?? false }
         self.session = session
         session.onSharing = { [weak self, weak session] sharing in
             DispatchQueue.main.async {
@@ -51,6 +68,8 @@ final class ScreenReceiver {
 /// file descriptor is never closed while that thread may still use it.
 private final class Session {
     var onSharing: ((Bool) -> Void)?
+    /// Whether app audio goes into the call; asked for each chunk.
+    var shareAudio: () -> Bool = { true }
 
     private let listener: Int32
     private let room: SilentRoom
@@ -80,6 +99,22 @@ private final class Session {
                 for i in bytes.indices { bytes[i] = table[Int(bytes[i])] }
             }
         }
+    }
+
+    /// Reads one app audio message and passes it on if the user shares audio.
+    private func receiveAudio(_ client: Int32) -> Bool {
+        var count: UInt32 = 0
+        guard withUnsafeMutableBytes(of: &count, { ScreenSocket.read(client, $0.baseAddress!, 4) }) else { return false }
+        let length = Int(UInt32(littleEndian: count))
+        guard length <= ScreenSocket.maxAudioBytes else { return false }
+        var pcm = Data(count: length)
+        guard length == 0 || pcm.withUnsafeMutableBytes({ ScreenSocket.read(client, $0.baseAddress!, length) }) else {
+            return false
+        }
+        if shareAudio() {
+            room.pushScreenAudio(pcm: pcm)
+        }
+        return true
     }
 
     init(listener: Int32, room: SilentRoom) {
@@ -130,7 +165,15 @@ private final class Session {
             }
         }
         var header = [UInt32](repeating: 0, count: ScreenSocket.headerFields)
-        while header.withUnsafeMutableBytes({ ScreenSocket.read(client, $0.baseAddress!, ScreenSocket.headerSize) }) {
+        let word = MemoryLayout<UInt32>.size
+        while header.withUnsafeMutableBytes({ ScreenSocket.read(client, $0.baseAddress!, word) }) {
+            if UInt32(littleEndian: header[0]) == ScreenSocket.audioMagic {
+                guard receiveAudio(client) else { return }
+                continue
+            }
+            guard header.withUnsafeMutableBytes({
+                ScreenSocket.read(client, $0.baseAddress! + word, ScreenSocket.headerSize - word)
+            }) else { return }
             let h = header.map { UInt32(littleEndian: $0) }
             let (width, height, yStride, uvStride, rotation) = (Int(h[1]), Int(h[2]), Int(h[3]), Int(h[4]), h[5])
             let yLength = yStride * height

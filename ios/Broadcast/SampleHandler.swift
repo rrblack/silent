@@ -1,10 +1,12 @@
+import AVFoundation
 import CoreMedia
 import ImageIO
 import ReplayKit
 
-/// The ReplayKit Broadcast Upload Extension: iOS hands it the screen, and it
-/// passes the frames to the Silent app over `ScreenSocket`. It runs in its
-/// own process with a 50 MB memory limit, so it only copies and forwards.
+/// The ReplayKit Broadcast Upload Extension: iOS hands it the screen and the
+/// sound of the apps on it, and it passes both to the Silent app over
+/// `ScreenSocket`. It runs in its own process with a 50 MB memory limit, so
+/// it only copies, converts and forwards.
 final class SampleHandler: RPBroadcastSampleHandler {
     private var socket: Int32 = -1
     private let queue = DispatchQueue(label: "silent.broadcast")
@@ -52,6 +54,10 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with type: RPSampleBufferType) {
+        if type == .audioApp {
+            forwardAudio(sampleBuffer)
+            return
+        }
         guard type == .video, socket >= 0,
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer)
         else { return }
@@ -107,6 +113,69 @@ final class SampleHandler: RPBroadcastSampleHandler {
                 socket,
                 UnsafeRawBufferPointer(start: uv, count: uvStride * CVPixelBufferGetHeightOfPlane(buffer, 1))
             )
+    }
+
+    /// App audio converted to what the call sends, and the format it was
+    /// converted from (only touched on `queue`).
+    private var converter: AVAudioConverter?
+    private var converterInput: AVAudioFormat?
+    private static let audioFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: 48_000, channels: 2, interleaved: true
+    )!
+
+    private func forwardAudio(_ sampleBuffer: CMSampleBuffer) {
+        lock.lock()
+        let done = finished
+        lock.unlock()
+        guard !done, socket >= 0 else { return }
+        queue.async {
+            guard let pcm = self.convert(sampleBuffer) else { return }
+            let header: [UInt32] = [ScreenSocket.audioMagic, UInt32(pcm.count)].map(\.littleEndian)
+            let sent = header.withUnsafeBytes { ScreenSocket.write(self.socket, $0) }
+                && pcm.withUnsafeBytes { ScreenSocket.write(self.socket, $0) }
+            if !sent {
+                self.lock.lock()
+                let report = !self.finished
+                self.finished = true
+                self.lock.unlock()
+                if report { self.fail("Silent stopped receiving the screen.") }
+            }
+        }
+    }
+
+    /// 16-bit stereo at 48 kHz, whatever ReplayKit delivers.
+    private func convert(_ sampleBuffer: CMSampleBuffer) -> Data? {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+              var stream = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
+              let input = AVAudioFormat(streamDescription: &stream)
+        else { return nil }
+        let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
+        guard frames > 0, let source = AVAudioPCMBuffer(pcmFormat: input, frameCapacity: frames) else { return nil }
+        source.frameLength = frames
+        guard CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer, at: 0, frameCount: Int32(frames), into: source.mutableAudioBufferList
+        ) == noErr else { return nil }
+
+        if converterInput != input {
+            converter = AVAudioConverter(from: input, to: Self.audioFormat)
+            converterInput = input
+        }
+        let capacity = AVAudioFrameCount(Double(frames) * 48_000 / input.sampleRate) + 64
+        guard let converter, let output = AVAudioPCMBuffer(pcmFormat: Self.audioFormat, frameCapacity: capacity)
+        else { return nil }
+        var fed = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if fed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            fed = true
+            status.pointee = .haveData
+            return source
+        }
+        guard error == nil, output.frameLength > 0, let samples = output.int16ChannelData else { return nil }
+        return Data(bytes: samples[0], count: Int(output.frameLength) * 4)
     }
 
     /// Degrees to turn the frame clockwise to make it upright.
