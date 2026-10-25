@@ -63,6 +63,9 @@ const RELAY_RETRY_MAX: Duration = Duration::from_secs(15);
 const FILE_BUFFER_HIGH: u64 = 4 * 1024 * 1024;
 /// Files one friend may be sending at once.
 const MAX_INCOMING_FILES: usize = 4;
+/// How often to ask the relay for fresh TURN credentials (they last four
+/// hours), so a long call can still reconnect through TURN.
+const ICE_REFRESH_EVERY: Duration = Duration::from_secs(3 * 60 * 60);
 /// How often audio levels are read for the speaking indicators.
 const LEVELS_EVERY: Duration = Duration::from_millis(250);
 /// Audio level (0..1, linear) above which someone counts as speaking.
@@ -617,9 +620,18 @@ impl Actor {
         let mut relay_open = true;
         let mut levels = tokio::time::interval(LEVELS_EVERY);
         levels.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut ice_refresh = tokio::time::interval_at(
+            tokio::time::Instant::now() + ICE_REFRESH_EVERY,
+            ICE_REFRESH_EVERY,
+        );
         loop {
             tokio::select! {
                 _ = levels.tick() => self.read_levels(),
+                _ = ice_refresh.tick() => {
+                    if let Some(relay) = &self.relay {
+                        let _ = relay.send(ClientMsg::RefreshIce);
+                    }
+                }
                 msg = relay_in.recv(), if relay_open => match msg {
                     Some(msg) => self.on_relay(msg).await,
                     None => {
@@ -754,6 +766,14 @@ impl Actor {
             ServerMsg::Error {
                 code: RelayErrorCode::Evicted,
             } => self.evicted = true,
+            ServerMsg::Ice { ice } => {
+                self.rtc_config = rtc_config(&ice, self.relay_only);
+                for pc in self.peers.values().filter_map(|p| p.pc.as_ref()) {
+                    if let Err(e) = pc.set_configuration(self.rtc_config.clone()) {
+                        tracing::debug!("could not update ice servers: {:?}", e.error_type);
+                    }
+                }
+            }
             ServerMsg::Welcome { .. } | ServerMsg::Error { .. } => {}
         }
     }
@@ -1039,7 +1059,7 @@ impl Actor {
         if ice_restart {
             // Picks up fresh TURN credentials if the relay handed out new ones.
             if let Err(e) = pc.set_configuration(self.rtc_config.clone()) {
-                tracing::debug!(peer, "could not update ice servers: {e}");
+                tracing::debug!(peer, "could not update ice servers: {:?}", e.error_type);
             }
         }
         self.prefer_codecs(peer, &pc);

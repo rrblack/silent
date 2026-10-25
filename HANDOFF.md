@@ -7,8 +7,8 @@ The state of the project, how to pick it up, and what to do next. First written 
 | Area | Built | Verified | Not verified yet |
 |---|---|---|---|
 | Crypto and protocol (`silent-core`, protocol v3) | ✅ | 26 unit tests | Independent security review |
-| Rust relay (`silent-relay`) | ✅ | 8 protocol tests, incl. the join budget and evicting wrong-code peers | |
-| Cloudflare Worker relay (`signal/`) | ✅ | Same 8 tests against `wrangler dev`, plus all 9 call tests through it | Deployed? Check section 4 |
+| Rust relay (`silent-relay`) | ✅ | 9 protocol tests, incl. the join budget and evicting wrong-code peers | |
+| Cloudflare Worker relay (`signal/`) | ✅ | Same 9 tests against `wrangler dev`, plus all 10 call tests through it | Deployed? Check section 4 |
 | Call engine (`silent-engine`, protocol v3) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, relay dropping mid-call and coming back, ICE restart, H.264 negotiation, **speaking detection and mute-for-me**, **3 MiB file transfer with chat flowing alongside** | Real networks, NAT, TURN, a real network switch |
 | Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me, a received image shown in chat with Save** | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
 | Installers | ✅ | CI builds a Windows zip (exe with icon), macOS dmg (.app with permission texts, ad hoc signed), Linux .deb and tarball; the .deb was inspected locally | Installing them on real machines |
@@ -132,7 +132,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 - **Hardware encoding is untested, and missing on Windows.** The app asks for H.264 and the hardware encoder when libwebrtc reports one, with VP8 in software as the fallback. The libwebrtc build (LiveKit's webrtc-sys) has VideoToolbox on macOS and iOS, MediaCodec on Android and VAAPI on Linux (Intel/AMD), but nothing on Windows, and NVENC only on Linux when built with the CUDA toolkit. Nobody has looked at Stats on a real GPU yet.
 - **No per-friend volume slider**, only Mute for me: the libwebrtc binding doesn't expose a volume control for incoming audio.
 - **webrtc-sys is patched** (`third_party/webrtc-sys`, see its README): upstream asks libwebrtc for verbose logs, which made every call burn CPU and kept file transfers under 1 MB/s. Reapply the one-line patch when upgrading.
-- **TURN credentials last 4 hours.** They are handed out when joining the relay. A call older than that which needs to reconnect through TURN (after a network switch, say) can fail; leaving and rejoining the room fixes it.
+- **TURN credentials last 4 hours.** The app asks the relay for fresh ones every 3 hours, so this only matters if the relay is unreachable at that moment.
 - **Rejoining after a relay outage starts every pair over.** New keys mean new safety words; compare them again if it matters.
 - **Room squatting and join spam.** Someone who joins with a wrong code is now removed automatically by the people who were there first, but can rejoin until the per-room join budget runs out, and a join spammer can keep dropped friends from rejoining for a minute. See `docs/SECURITY.md`.
 - **Android:** first run on a device is untested. Remote video is capped at 30 fps and 960 px for camera tiles, by design for battery.

@@ -333,6 +333,11 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
                         break None;
                     }
                 }
+                Ok(ClientMsg::RefreshIce) => {
+                    let _ = tx.try_send(ServerMsg::Ice {
+                        ice: state.config.ice.clone(),
+                    });
+                }
                 Ok(ClientMsg::Evict { peer }) if peer != me => {
                     vote_evict(&state, nameplate, me, peer).await
                 }

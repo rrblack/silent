@@ -305,3 +305,15 @@ async fn eviction_needs_everyone_who_was_there_first() {
     assert_eq!(recv(&mut a).await, ServerMsg::Left { peer: m_id });
     assert_eq!(recv(&mut b).await, ServerMsg::Left { peer: m_id });
 }
+
+#[tokio::test]
+async fn ice_servers_can_be_refreshed() {
+    let base = relay_base().await;
+    let n = unique_nameplate();
+    let mut a = connect(&base, n, Intent::Create).await;
+    let ServerMsg::Welcome { ice, .. } = recv(&mut a).await else {
+        panic!("no welcome")
+    };
+    send(&mut a, &ClientMsg::RefreshIce).await;
+    assert_eq!(recv(&mut a).await, ServerMsg::Ice { ice });
+}

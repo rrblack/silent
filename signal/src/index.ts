@@ -23,6 +23,7 @@ const TURN_TTL_SECONDS = 4 * 60 * 60;
 const TURN_CAP_GB_DEFAULT = 900;
 const TURN_WINDOW_DAYS = 31;
 const USAGE_CACHE_MS = 5 * 60 * 1000;
+const ICE_REFRESH_MS = 10 * 60 * 1000;
 
 type ErrorCode =
   | "room_full"
@@ -194,6 +195,18 @@ export class Room extends DurableObject<Env> {
     return out;
   }
 
+  // Fresh TURN credentials, at most one request to Cloudflare per room every
+  // ICE_REFRESH_MS however often clients ask.
+  private iceCache?: { at: number; ice: IceConfig };
+
+  private async freshIce(): Promise<IceConfig> {
+    const now = Date.now();
+    if (!this.iceCache || now - this.iceCache.at > ICE_REFRESH_MS) {
+      this.iceCache = { at: now, ice: await iceConfig(this.env) };
+    }
+    return this.iceCache.ice;
+  }
+
   private save(peer: Peer): void {
     const { ws, ...attachment } = peer;
     ws.serializeAttachment(attachment satisfies Attachment);
@@ -291,6 +304,10 @@ export class Room extends DurableObject<Env> {
       return this.fail(ws, "bad_request");
     }
     if (typeof msg !== "object" || msg === null) return this.fail(ws, "bad_request");
+    if (msg.t === "refresh_ice") {
+      ws.send(JSON.stringify({ t: "ice", ice: await this.freshIce() }));
+      return;
+    }
     if (msg.t === "evict" && Number.isInteger(msg.peer) && msg.peer !== me) {
       const target = msg.peer as number;
       const peers = this.peers();

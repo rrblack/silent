@@ -86,6 +86,10 @@ pub enum ServerMsg {
     Error {
         code: RelayErrorCode,
     },
+    /// Fresh STUN/TURN servers, in answer to [`ClientMsg::RefreshIce`].
+    Ice {
+        ice: IceConfig,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +99,9 @@ pub enum ClientMsg {
         to: PeerId,
         data: String,
     },
+    /// Asks for fresh STUN/TURN servers: TURN credentials expire, and a
+    /// long call may still need them to reconnect.
+    RefreshIce,
     /// Asks the relay to remove `peer`, who failed the key exchange. The
     /// relay removes them once every peer that joined before them has asked,
     /// so a newcomer can never remove the people who were already there.
