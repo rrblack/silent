@@ -701,6 +701,89 @@ async fn friend_volume_changes_what_you_hear() {
     bob.until(speaking(true)).await;
 }
 
+/// Waits until `pick` finds what it wants in Bob's stats of Alice.
+async fn until_stats(
+    room: &Room,
+    friend: PeerId,
+    mut pick: impl FnMut(&silent_engine::stats::PeerStats) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let stats = room.stats().await;
+        if stats.iter().any(|s| s.peer == friend && pick(s)) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "stats never matched");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn computer_audio_arrives_apart_from_the_voice() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut sharing = settings(&relay, "Alice");
+    sharing.audio = AudioInput::Silent;
+    let mut alice = Member::new(engine.create_room(sharing).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+    let alice_id = alice.room.me();
+
+    // A stereo tone as Alice's computer audio, 10 ms at a time.
+    let input = alice.room.screen_audio_input();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let feeder = tokio::spawn(async move {
+        let mut n = 0u64;
+        while !stopped.load(Ordering::Relaxed) {
+            let chunk: Vec<i16> = (0..480u64)
+                .flat_map(|i| {
+                    let t = (n + i) as f64 / 48_000.0;
+                    let v = ((t * 330.0 * std::f64::consts::TAU).sin() * 9000.0) as i16;
+                    [v, v]
+                })
+                .collect();
+            n += 480;
+            input.push(chunk);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    until_stats(&bob.room, alice_id, |s| {
+        s.computer_audio_level.is_some_and(|l| l > 0.05)
+    })
+    .await;
+    // Her microphone is silent, so she doesn't show as talking.
+    let talking = tokio::time::timeout(
+        Duration::from_secs(2),
+        bob.until(|e| match e {
+            RoomEvent::Speaking { peers } if peers.contains(&alice_id) => Some(()),
+            _ => None,
+        }),
+    )
+    .await;
+    assert!(talking.is_err(), "computer audio must not count as talking");
+
+    // Her volume covers her computer audio too.
+    bob.room.set_friend_volume(alice_id, 0.0);
+    until_stats(&bob.room, alice_id, |s| {
+        s.computer_audio_level.is_some_and(|l| l < 0.001)
+    })
+    .await;
+
+    stop.store(true, Ordering::Relaxed);
+    feeder.await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn files_arrive_whole_and_chat_keeps_flowing() {
     let _serial = SERIAL.lock().await;
@@ -746,7 +829,9 @@ async fn files_arrive_whole_and_chat_keeps_flowing() {
             Some((name, data)) => {
                 files.insert(name, data);
             }
-            None => chat_seen = files.is_empty(),
+            // The empty file may well come first; it's the big one chat
+            // mustn't wait for.
+            None => chat_seen = !files.contains_key("holiday.bin"),
         }
     }
     println!("3 MiB arrived in {:?}", started.elapsed());

@@ -29,6 +29,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Join and leave chimes; ALSA on Linux, WASAPI on Windows, CoreAudio on macOS.
 cpal = "0.16"
 
+[target.'cfg(windows)'.dependencies]
+# Computer audio for screen shares: process loopback, everything but Silent.
+wasapi = "0.19"
+
 [build-dependencies]
 slint-build = "1.18"
 winresource = "0.1"

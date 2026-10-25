@@ -743,6 +743,10 @@ export component AppWindow inherits Window {
     in-out property <bool> sounds: true;
     /// A file is being dragged over the window.
     in property <bool> dropping;
+    /// Sharing computer audio works here (Windows).
+    in property <bool> computer-audio-supported;
+    /// Send the computer's sound with the next screen share.
+    in-out property <bool> share-audio;
     in-out property <string> relay-url;
 
     in property <string> code;
@@ -943,6 +947,10 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+        if root.computer-audio-supported: CheckBox {
+            text: "Include computer audio (everything except this call)";
+            checked <=> root.share-audio;
         }
         PillButton { label: "Cancel"; clicked => { root.picker-open = false; } }
     }

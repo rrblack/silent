@@ -193,6 +193,9 @@ fun HomeScreen(vm: RoomViewModel) {
             SettingSwitch("HD camera (1080p, 60 fps)", vm.cameraHigh) { vm.cameraHigh = it }
             SettingSwitch("Sharp screen share (1440p, 30 fps)", vm.screenDetail) { vm.screenDetail = it }
             SettingSwitch("Sound when friends join or leave", vm.sounds) { vm.sounds = it }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                SettingSwitch("Share phone audio with the screen", vm.shareAudio) { vm.shareAudio = it }
+            }
         }
     }
 }

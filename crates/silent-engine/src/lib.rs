@@ -17,8 +17,8 @@ use silent_core::InviteCode;
 
 pub use libwebrtc;
 pub use media::{
-    AudioDevice, AudioDevices, AudioInput, CameraProfile, CameraTarget, ScreenProfile,
-    ScreenTarget, VideoInput, VideoKind,
+    AudioDevice, AudioDevices, AudioInput, CameraProfile, CameraTarget, ScreenAudioInput,
+    ScreenProfile, ScreenTarget, VideoInput, VideoKind, SCREEN_AUDIO_CHANNELS, SCREEN_AUDIO_RATE,
 };
 pub use room::{FileTooLarge, Room, RoomEvent, Settings, MAX_FRIEND_VOLUME};
 pub use signaling::SignalError;

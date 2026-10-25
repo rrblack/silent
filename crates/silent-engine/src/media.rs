@@ -20,6 +20,12 @@ use libwebrtc::video_track::RtcVideoTrack;
 pub const STREAM_AUDIO: &str = "silent-audio";
 pub const STREAM_CAMERA: &str = "silent-camera";
 pub const STREAM_SCREEN: &str = "silent-screen";
+/// The computer's own sound, sent along with a screen share.
+pub const STREAM_SCREEN_AUDIO: &str = "silent-screen-audio";
+
+/// Computer audio is sent as 48 kHz stereo.
+pub const SCREEN_AUDIO_RATE: u32 = 48_000;
+pub const SCREEN_AUDIO_CHANNELS: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VideoKind {
@@ -208,6 +214,10 @@ impl LocalVideo {
 pub(crate) struct LocalMedia {
     factory: PeerConnectionFactory,
     pub audio: RtcAudioTrack,
+    /// Computer audio for screen shares: silent until the app pushes some.
+    pub screen_audio: RtcAudioTrack,
+    pub screen_audio_input: ScreenAudioInput,
+    screen_audio_feed: tokio::task::JoinHandle<()>,
     _silence: Option<NativeAudioSource>,
     tone: Option<tokio::task::JoinHandle<()>>,
     platform_audio: bool,
@@ -252,9 +262,22 @@ impl LocalMedia {
             (Some(source), true) => Some(tokio::spawn(test_tone(source.clone()))),
             _ => None,
         };
+        // No echo cancellation or noise suppression: it's music and games,
+        // and it never came through a microphone.
+        let screen_source = NativeAudioSource::new(
+            AudioSourceOptions::default(),
+            SCREEN_AUDIO_RATE,
+            SCREEN_AUDIO_CHANNELS,
+            100,
+        );
+        let screen_audio = factory.create_audio_track(STREAM_SCREEN_AUDIO, screen_source.clone());
+        let (chunks, queued) = tokio::sync::mpsc::channel(SCREEN_AUDIO_QUEUE);
         Self {
             factory: factory.clone(),
             audio,
+            screen_audio,
+            screen_audio_input: ScreenAudioInput { chunks },
+            screen_audio_feed: tokio::spawn(feed_screen_audio(screen_source, queued)),
             _silence: silence,
             tone,
             platform_audio,
@@ -282,9 +305,51 @@ impl Drop for LocalMedia {
         if let Some(tone) = self.tone.take() {
             tone.abort();
         }
+        self.screen_audio_feed.abort();
         if self.platform_audio {
             self.factory.release_platform_adm();
         }
+    }
+}
+
+/// Chunks of computer audio waiting for the source; more are dropped.
+const SCREEN_AUDIO_QUEUE: usize = 32;
+
+/// Where an app pushes the computer's own sound while it shares its screen
+/// (on Windows: everything playing except Silent itself, so friends don't
+/// hear themselves). Cheap to clone and safe to use from any thread.
+#[derive(Clone)]
+pub struct ScreenAudioInput {
+    chunks: tokio::sync::mpsc::Sender<Vec<i16>>,
+}
+
+impl ScreenAudioInput {
+    /// Interleaved 16-bit stereo at 48 kHz, in chunks of any length. Never
+    /// blocks: if the call can't keep up, the chunk is dropped.
+    pub fn push(&self, samples: Vec<i16>) {
+        if samples.len() >= SCREEN_AUDIO_CHANNELS as usize {
+            let _ = self.chunks.try_send(samples);
+        }
+    }
+}
+
+/// Hands pushed computer audio to `source` in order. Each capture is
+/// awaited: libwebrtc holds on to it until the source's queue has room.
+async fn feed_screen_audio(
+    source: NativeAudioSource,
+    mut chunks: tokio::sync::mpsc::Receiver<Vec<i16>>,
+) {
+    let channels = SCREEN_AUDIO_CHANNELS as usize;
+    while let Some(mut data) = chunks.recv().await {
+        data.truncate(data.len() / channels * channels);
+        let frame = AudioFrame {
+            samples_per_channel: (data.len() / channels) as u32,
+            data: data.into(),
+            sample_rate: SCREEN_AUDIO_RATE,
+            num_channels: SCREEN_AUDIO_CHANNELS,
+        };
+        // A full queue (a burst from the capture) drops the chunk.
+        let _ = source.capture_frame(&frame).await;
     }
 }
 

@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod computer_audio;
 mod files;
 mod sounds;
 mod video;
@@ -37,6 +38,14 @@ struct Backend {
     /// and file dialogs can tell they are no longer current.
     generation: AtomicU64,
     pumps: Mutex<HashMap<String, JoinHandle<()>>>,
+    /// The computer's sound going out with the screen share, if chosen.
+    computer_audio: Mutex<Option<computer_audio::ComputerAudio>>,
+}
+
+/// Stops sending computer audio (the screen share ended, or the room).
+fn stop_computer_audio() {
+    let capture = backend().computer_audio.lock().unwrap().take();
+    drop(capture);
 }
 
 fn generation() -> u64 {
@@ -632,7 +641,10 @@ impl UiState {
             RoomEvent::LocalMediaError { kind, message } => {
                 match kind {
                     VideoKind::Camera => self.local.camera = false,
-                    VideoKind::Screen => self.local.screen = false,
+                    VideoKind::Screen => {
+                        self.local.screen = false;
+                        stop_computer_audio();
+                    }
                 }
                 self.system(message);
             }
@@ -895,6 +907,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
 /// an error message. Call from the UI thread.
 fn leave_room(error: Option<&str>) {
     backend().generation.fetch_add(1, Ordering::SeqCst);
+    stop_computer_audio();
     let room = backend().room.lock().unwrap().take();
     stop_pumps(None);
     if let Some(room) = room {
@@ -942,6 +955,9 @@ fn refresh_stats(window: slint::Weak<AppWindow>) {
                     }
                     for v in &p.receiving {
                         lines.push(format!("    you get: {}", v.summary()).into());
+                    }
+                    if let Some(audio) = p.computer_audio_summary() {
+                        lines.push(format!("    you get: {audio}").into());
                     }
                 }
             });
@@ -994,6 +1010,7 @@ fn main() -> anyhow::Result<()> {
         room: Mutex::new(None),
         generation: AtomicU64::new(0),
         pumps: Mutex::new(HashMap::new()),
+        computer_audio: Mutex::new(None),
     };
     if BACKEND.set(state).is_err() {
         unreachable!("main runs once");
@@ -1075,6 +1092,7 @@ fn main() -> anyhow::Result<()> {
     window.on_toggle_screen(move || {
         let Some(w) = weak.upgrade() else { return };
         if w.get_screen_on() {
+            stop_computer_audio();
             with_room(|r| r.share_screen(None));
             ui(|s| {
                 s.local.screen = false;
@@ -1112,7 +1130,8 @@ fn main() -> anyhow::Result<()> {
         w.set_picker_open(true);
     });
 
-    window.on_pick_source(|id| {
+    let weak = window.as_weak();
+    window.on_pick_source(move |id| {
         let target = match id.as_str() {
             "picker" => Some(ScreenTarget::SystemPicker),
             "test" => Some(ScreenTarget::TestPattern),
@@ -1124,8 +1143,23 @@ fn main() -> anyhow::Result<()> {
         };
         if let Some(target) = target {
             with_room(|r| r.share_screen(Some(target)));
+            let with_audio = weak.upgrade().is_some_and(|w| w.get_share_audio());
+            let mut problem = None;
+            if with_audio {
+                let mut input = None;
+                with_room(|r| input = Some(r.screen_audio_input()));
+                if let Some(input) = input {
+                    match computer_audio::ComputerAudio::start(input) {
+                        Ok(capture) => *backend().computer_audio.lock().unwrap() = Some(capture),
+                        Err(reason) => problem = Some(reason),
+                    }
+                }
+            }
             ui(|s| {
                 s.local.screen = true;
+                if let Some(reason) = problem {
+                    s.system(reason);
+                }
                 s.rebuild();
             });
         }
@@ -1289,6 +1323,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     accept_dropped_files(&window);
+    window.set_computer_audio_supported(computer_audio::SUPPORTED);
     let weak = window.as_weak();
     let clock_timer = slint::Timer::default();
     clock_timer.start(

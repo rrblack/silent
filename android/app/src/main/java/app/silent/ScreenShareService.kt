@@ -1,14 +1,21 @@
 package app.silent
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioPlaybackCaptureConfiguration
+import android.media.AudioRecord
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -17,18 +24,25 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.util.Log
+import kotlin.concurrent.thread
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
  * Captures the screen with MediaProjection and pushes RGBA frames into the
- * room. Android requires this to run as a mediaProjection foreground service.
+ * room, and on Android 10+ the phone's media and game sound with it (never
+ * the call itself, so friends don't hear themselves). Android requires this
+ * to run as a mediaProjection foreground service.
  */
 class ScreenShareService : Service() {
     private var projection: MediaProjection? = null
     private var display: VirtualDisplay? = null
     private var reader: ImageReader? = null
     private var thread: HandlerThread? = null
+    private var audio: AudioRecord? = null
+    private var audioThread: Thread? = null
+    @Volatile
+    private var capturingAudio = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -52,11 +66,11 @@ class ScreenShareService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startCapture(resultCode, data)
+        startCapture(resultCode, data, intent.getBooleanExtra(EXTRA_AUDIO, false))
         return START_NOT_STICKY
     }
 
-    private fun startCapture(resultCode: Int, data: Intent) {
+    private fun startCapture(resultCode: Int, data: Intent, withAudio: Boolean) {
         val manager = getSystemService(MediaProjectionManager::class.java)
         val projection = manager.getMediaProjection(resultCode, data) ?: return stopSelf()
         this.projection = projection
@@ -100,9 +114,55 @@ class ScreenShareService : Service() {
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.surface, null, null,
         )
         ActiveCall.room?.setScreen(true)
+        if (withAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) startAudio(projection)
+    }
+
+    /** Media, game and unknown sounds; calls (Silent's own audio) aren't captured. */
+    @SuppressLint("NewApi")
+    private fun startAudio(projection: MediaProjection) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            .addMatchingUsage(AudioAttributes.USAGE_GAME)
+            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+            .build()
+        val format = AudioFormat.Builder()
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(RATE)
+            .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+            .build()
+        val minimum = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+        val record = try {
+            AudioRecord.Builder()
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(max(minimum, RATE * 4 / 5))
+                .setAudioPlaybackCaptureConfig(config)
+                .build()
+        } catch (e: Exception) {
+            Log.w("silent", "phone audio capture unavailable", e)
+            return
+        }
+        audio = record
+        capturingAudio = true
+        record.startRecording()
+        audioThread = thread(name = "silent-screen-audio") {
+            // 10 ms of 16-bit stereo.
+            val chunk = ByteArray(RATE / 100 * 4)
+            while (capturingAudio) {
+                val n = record.read(chunk, 0, chunk.size)
+                if (n > 0) ActiveCall.room?.pushScreenAudio(chunk.copyOf(n))
+                if (n < 0) break
+            }
+        }
     }
 
     override fun onDestroy() {
+        capturingAudio = false
+        audioThread?.join(500)
+        audio?.run {
+            runCatching { stop() }
+            release()
+        }
         display?.release()
         reader?.close()
         projection?.stop()
@@ -116,12 +176,15 @@ class ScreenShareService : Service() {
         private const val ID = 2
         private const val EXTRA_RESULT = "result"
         private const val EXTRA_DATA = "data"
+        private const val EXTRA_AUDIO = "audio"
+        private const val RATE = 48_000
         private const val MAX_LONG_EDGE = 1920f
 
-        fun start(context: Context, resultCode: Int, data: Intent) {
+        fun start(context: Context, resultCode: Int, data: Intent, withAudio: Boolean) {
             val intent = Intent(context, ScreenShareService::class.java)
                 .putExtra(EXTRA_RESULT, resultCode)
                 .putExtra(EXTRA_DATA, data)
+                .putExtra(EXTRA_AUDIO, withAudio)
             context.startForegroundService(intent)
         }
 

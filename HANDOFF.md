@@ -8,7 +8,7 @@ The state of the project, how to pick it up, and what to do next. First written 
 |---|---|---|---|
 | Crypto and protocol (`silent-core`, protocol v3) | ✅ | 26 unit tests | Independent security review |
 | Rust relay (`silent-relay`) | ✅ | 9 protocol tests, incl. the join budget and evicting wrong-code peers | |
-| Cloudflare Worker relay (`signal/`) | ✅ | Same 9 tests against `wrangler dev`, plus all 11 call tests through it | Deployed? Check section 4 |
+| Cloudflare Worker relay (`signal/`) | ✅ | Same 9 tests against `wrangler dev`, plus all 12 call tests through it | Deployed? Check section 4 |
 | Call engine (`silent-engine`, protocol v3) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, relay dropping mid-call and coming back, ICE restart, H.264 negotiation, **speaking detection and mute-for-me**, **3 MiB file transfer with chat flowing alongside** | Real networks, NAT, TURN, a real network switch |
 | Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me and the volume slider, a received image shown in chat with Save**, the join chime (captured through an ALSA file sink), the taskbar alert (the X11 urgency hint), and "weak connection" on a friend's tile under 20 % packet loss (iptables), gone again once the loss stops; "Reconnecting…" over the frozen picture when all UDP is blocked, and the call coming back; a six-minute call of the app and three bots with steady memory | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
 | Installers | ✅ | CI builds a Windows zip (exe with icon), macOS dmg (.app with permission texts, ad hoc signed), Linux .deb and tarball; the .deb was inspected locally | Installing them on real machines |
@@ -63,6 +63,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] Chat works both ways, with times next to names.
    - [ ] **Share screen → Test pattern**: Stats shows around 60 fps.
    - [ ] **Share screen** with a real screen, then a window.
+   - [ ] **Computer audio (Windows):** tick "Include computer audio" in the share picker and play a video: the other side hears it, and does *not* hear its own voice coming back. Untested; it needs Windows 10 version 2004 or later and says so in chat otherwise.
    - [ ] **Camera** turns on and shows your webcam.
    - [ ] Mic works. Both windows share one mic and speaker, so expect feedback; headphones help.
    - [ ] **Stats** names the codec and encoder. Expect `VP8 via libvpx` (software) on Windows: the libwebrtc build used has no hardware encoders there. On a Mac it should say `H264 via VideoToolbox`, and on Linux with an Intel or AMD GPU, VAAPI. To compare, start the app with `SILENT_VIDEO_CODEC=vp8` or `h264`.
@@ -82,7 +83,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
 4. Check each of these:
    - [ ] Voice both ways, with no echo on speakers. The speaker button switches between loudspeaker and earpiece (a headset always wins).
    - [ ] The phone camera shows upright on the PC, with natural colours (if blacks look crushed and colours too strong, the camera's YUV is full range and needs scaling like iOS screen frames do).
-   - [ ] Screen share works in both directions.
+   - [ ] Screen share works in both directions. With Settings → "Share phone audio with the screen" (Android 10+), a video playing on the phone is heard on the PC (untested).
    - [ ] Chat works.
    - [ ] Verify words match on both screens.
    - [ ] Stats on the phone names the encoder (`c2.*` or `MediaCodec` means hardware).
@@ -140,6 +141,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 - **Rejoining after a relay outage starts every pair over.** New keys mean new safety words; compare them again if it matters.
 - **Room squatting and join spam.** Someone who joins with a wrong code is now removed automatically by the people who were there first, but can rejoin until the per-room join budget runs out, and a join spammer can keep dropped friends from rejoining for a minute. See `docs/SECURITY.md`.
 - **Android:** first run on a device is untested. Remote video is capped at 30 fps and 960 px for camera tiles, by design for battery.
+- **Computer audio with a screen share** works on Windows (process loopback, everything except Silent) and Android 10+ (media and game sound). Not yet on macOS (ScreenCaptureKit can do it), Linux (PipeWire) or iOS (ReplayKit's app audio). The engine side is tested (`computer_audio_arrives_apart_from_the_voice`); the platform capture isn't.
 - **iOS:** only built for the simulator so far. Screen sharing needs a signed build (App Group), and there's no CallKit yet. The bundle ids `app.silent`, `app.silent.broadcast` and the App Group `group.app.silent` must be registrable under the owner's Apple team; if not, rename them together in `ios/project.yml`, `ScreenSocket.appGroup` and `BroadcastButton.preferredExtension`. Camera rotation follows how the phone is held, untested on a device. The join and leave chimes play through AVAudioPlayer next to the call, untested.
 
 ## 6. Next steps, in order

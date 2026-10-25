@@ -80,6 +80,8 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     var cameraHigh by mutableStateOf(false)
     var screenDetail by mutableStateOf(false)
     var sounds by mutableStateOf(true)
+    /** Send the phone's media and game sound with a screen share (Android 10+). */
+    var shareAudio by mutableStateOf(true)
     var busy by mutableStateOf(false)
     var error by mutableStateOf("")
 

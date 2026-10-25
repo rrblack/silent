@@ -9,7 +9,7 @@ use libwebrtc::peer_connection::PeerConnection;
 use libwebrtc::stats::RtcStats;
 use silent_core::PeerId;
 
-use crate::media::VideoKind;
+use crate::media::{VideoKind, STREAM_SCREEN_AUDIO};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoStats {
@@ -66,6 +66,17 @@ pub struct PeerStats {
     pub sending: Vec<VideoStats>,
     pub receiving: Vec<VideoStats>,
     pub rtt_ms: Option<f64>,
+    /// How loud the friend's computer audio arrives (0..1), when they send it.
+    pub computer_audio_level: Option<f64>,
+}
+
+impl PeerStats {
+    /// A line for the Stats screen while their computer audio plays.
+    pub fn computer_audio_summary(&self) -> Option<&'static str> {
+        self.computer_audio_level
+            .filter(|level| *level > 0.001)
+            .map(|_| "computer audio")
+    }
 }
 
 /// One quick reading of a connection. Audio levels are 0..1 (linear).
@@ -80,17 +91,33 @@ pub(crate) struct Pulse {
     pub audio_packets: Option<(u64, i64)>,
 }
 
+/// The m-line of computer audio: the transceiver our own computer audio is
+/// sent on, which also carries the friend's (remote track ids are random).
+fn screen_audio_mid(pc: &PeerConnection) -> Option<String> {
+    pc.transceivers().into_iter().find_map(|t| {
+        let id = t.sender().track()?.id();
+        (id == STREAM_SCREEN_AUDIO).then(|| t.mid()).flatten()
+    })
+}
+
 pub(crate) async fn pulse(pc: &PeerConnection) -> Pulse {
     let mut pulse = Pulse::default();
+    let screen_audio = screen_audio_mid(pc);
     let Ok(report) = pc.get_stats().await else {
         return pulse;
     };
     for stat in report {
         match stat {
-            RtcStats::MediaSource(s) if s.source.kind == "audio" => {
+            // Our microphone, not our computer audio.
+            RtcStats::MediaSource(s)
+                if s.source.kind == "audio" && s.source.track_identifier != STREAM_SCREEN_AUDIO =>
+            {
                 pulse.sent = Some(s.audio.audio_level);
             }
-            RtcStats::InboundRtp(s) if s.stream.kind == "audio" => {
+            // Their voice only: computer audio has its own stream.
+            RtcStats::InboundRtp(s)
+                if s.stream.kind == "audio" && Some(&s.inbound.mid) != screen_audio.as_ref() =>
+            {
                 pulse.received = Some(s.inbound.audio_level);
                 pulse.audio_packets = Some((s.received.packets_received, s.received.packets_lost));
             }
@@ -205,6 +232,7 @@ pub(crate) async fn collect(peer: PeerId, pc: &PeerConnection) -> PeerStats {
         })
         .collect();
 
+    let screen_audio = screen_audio_mid(pc);
     let mut out = PeerStats {
         peer,
         ..Default::default()
@@ -256,6 +284,13 @@ pub(crate) async fn collect(peer: PeerId, pc: &PeerConnection) -> PeerStats {
                 if rtt > 0.0 {
                     out.rtt_ms = Some(rtt * 1000.0);
                 }
+            }
+            RtcStats::InboundRtp(s)
+                if s.stream.kind == "audio"
+                    && Some(&s.inbound.mid) == screen_audio.as_ref()
+                    && s.received.packets_received > 0 =>
+            {
+                out.computer_audio_level = Some(s.inbound.audio_level);
             }
             RtcStats::Codec(c) => {
                 let name = c.codec.mime_type.trim_start_matches("video/").to_string();

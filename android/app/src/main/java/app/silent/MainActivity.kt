@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
             vm.screenOn = true
-            ScreenShareService.start(this, result.resultCode, data)
+            ScreenShareService.start(this, result.resultCode, data, vm.shareAudio)
         }
     }
 

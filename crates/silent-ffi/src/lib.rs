@@ -398,6 +398,17 @@ impl SilentRoom {
         self.screen.push_rgba(width, height, row_stride, &rgba);
     }
 
+    /// The phone's own sound while sharing the screen: 16-bit little-endian
+    /// stereo PCM at 48 kHz, in chunks of any length (Android's playback
+    /// capture). Dropped if the call can't keep up.
+    pub fn push_screen_audio(&self, pcm: Vec<u8>) {
+        let samples = pcm
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        self.with_room(|r| r.screen_audio_input().push(samples));
+    }
+
     /// One screen frame in YUV 4:2:0 (iOS ReplayKit delivers NV12). Same
     /// arguments as `push_camera_frame`.
     #[allow(clippy::too_many_arguments)]
@@ -447,6 +458,7 @@ impl SilentRoom {
                             .iter()
                             .map(|v| format!("you get: {}", v.summary())),
                     )
+                    .chain(p.computer_audio_summary().map(|a| format!("you get: {a}")))
                     .collect(),
             })
             .collect()

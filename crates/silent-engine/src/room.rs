@@ -43,8 +43,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::media::{
     apply_encoding, hardware_encoder, test_pattern, AudioInput, CameraProfile, CameraTarget,
-    CodecChoice, LocalMedia, Producer, ScreenProfile, ScreenTarget, VideoInput, VideoKind,
-    STREAM_AUDIO,
+    CodecChoice, LocalMedia, Producer, ScreenAudioInput, ScreenProfile, ScreenTarget, VideoInput,
+    VideoKind, STREAM_AUDIO, STREAM_SCREEN_AUDIO,
 };
 use crate::signaling::{self, SignalError, SignalLink, Welcome};
 use crate::stats::{self, PeerStats, Quality};
@@ -207,6 +207,8 @@ enum Internal {
     Track {
         peer: PeerId,
         kind: Option<VideoKind>,
+        /// An audio track carrying the friend's computer audio.
+        screen_audio: bool,
         track: MediaStreamTrack,
     },
     DcOpen {
@@ -253,6 +255,7 @@ pub struct Room {
     local_screen: RtcVideoTrack,
     camera_input: VideoInput,
     screen_input: VideoInput,
+    screen_audio_input: ScreenAudioInput,
     platform_audio: bool,
 }
 
@@ -284,6 +287,7 @@ impl Room {
                 source: media.screen.source.clone(),
                 encoding: media.screen.encoding,
             },
+            screen_audio_input: media.screen_audio_input.clone(),
             platform_audio: media.has_platform_audio(),
         };
 
@@ -342,6 +346,11 @@ impl Room {
             VideoKind::Camera => self.camera_input.clone(),
             VideoKind::Screen => self.screen_input.clone(),
         }
+    }
+
+    /// Where to push the computer's sound while sharing the screen.
+    pub fn screen_audio_input(&self) -> ScreenAudioInput {
+        self.screen_audio_input.clone()
     }
 
     pub fn local_video(&self, kind: VideoKind) -> RtcVideoTrack {
@@ -501,6 +510,8 @@ struct Peer {
     restarts: u32,
     recover_generation: u64,
     remote_audio: Option<RtcAudioTrack>,
+    /// Their computer audio, sent with a screen share.
+    remote_screen_audio: Option<RtcAudioTrack>,
     muted_for_me: bool,
     /// Playback volume set with [`Room::set_friend_volume`]; `None` is normal.
     volume: Option<f64>,
@@ -561,9 +572,12 @@ struct Incoming {
 }
 
 impl Peer {
-    /// Applies Mute for me and the volume to their audio.
+    /// Applies Mute for me and the volume to their voice and computer audio.
     fn apply_audio(&self) {
-        if let Some(audio) = &self.remote_audio {
+        for audio in [&self.remote_audio, &self.remote_screen_audio]
+            .into_iter()
+            .flatten()
+        {
             audio.set_enabled(!self.muted_for_me);
             audio.set_volume(self.volume.unwrap_or(1.0));
         }
@@ -1173,16 +1187,19 @@ impl Actor {
         })));
         let tx = self.internal.clone();
         pc.on_track(Some(Box::new(move |ev| {
-            let kind = ev
+            let streams: Vec<String> = ev
                 .streams
                 .iter()
                 .map(|s| s.id())
                 .chain(ev.receiver.stream_ids())
-                .find_map(|id| VideoKind::from_stream_id(&id));
-            tracing::debug!(peer, ?kind, mid = ?ev.transceiver.mid(), "remote track");
+                .collect();
+            let kind = streams.iter().find_map(|id| VideoKind::from_stream_id(id));
+            let screen_audio = streams.iter().any(|id| id == STREAM_SCREEN_AUDIO);
+            tracing::debug!(peer, ?kind, screen_audio, mid = ?ev.transceiver.mid(), "remote track");
             let _ = tx.send(Internal::Track {
                 peer,
                 kind,
+                screen_audio,
                 track: ev.track,
             });
         })));
@@ -1258,6 +1275,10 @@ impl Actor {
             let sender = pc.add_transceiver(track, init(kind.stream_id()))?.sender();
             senders.push((kind, sender));
         }
+        pc.add_transceiver(
+            MediaStreamTrack::Audio(self.media.screen_audio.clone()),
+            init(STREAM_SCREEN_AUDIO),
+        )?;
         self.attach_senders(peer, senders);
         Ok(())
     }
@@ -1277,6 +1298,10 @@ impl Actor {
             let sender = pc.add_track(track, &[kind.stream_id()])?;
             senders.push((kind, sender));
         }
+        pc.add_track(
+            MediaStreamTrack::Audio(self.media.screen_audio.clone()),
+            &[STREAM_SCREEN_AUDIO],
+        )?;
         self.attach_senders(peer, senders);
         Ok(())
     }
@@ -1478,7 +1503,12 @@ impl Actor {
                 );
             }
             Internal::PcState { peer, state } => self.on_pc_state(peer, state),
-            Internal::Track { peer, kind, track } => match track {
+            Internal::Track {
+                peer,
+                kind,
+                screen_audio,
+                track,
+            } => match track {
                 MediaStreamTrack::Video(track) => {
                     if let Some(kind) = kind {
                         if self.peers.get(&peer).is_some_and(|p| p.verified) {
@@ -1488,7 +1518,11 @@ impl Actor {
                 }
                 MediaStreamTrack::Audio(track) => {
                     if let Some(p) = self.peers.get_mut(&peer) {
-                        p.remote_audio = Some(track);
+                        if screen_audio {
+                            p.remote_screen_audio = Some(track);
+                        } else {
+                            p.remote_audio = Some(track);
+                        }
                         p.apply_audio();
                     }
                 }
