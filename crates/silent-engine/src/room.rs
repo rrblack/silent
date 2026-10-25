@@ -34,10 +34,10 @@ use libwebrtc::video_track::RtcVideoTrack;
 use silent_core::proto::{
     clean_file_name, clean_name, new_session_id, ChannelMsg, ClientMsg, FileFrame, IceConfig,
     Intent, MediaState, PeerFrame, RelayErrorCode, ServerMsg, Signal, CHAT_CHANNEL, FILE_CHANNEL,
-    FILE_CHUNK, MAX_CHAT_CHARS, MAX_FILE_BYTES, PROTOCOL_VERSION,
+    FILE_CHUNK, MAX_CHAT_CHARS, MAX_FILE_BYTES, MAX_PEERS, PROTOCOL_VERSION,
 };
 use silent_core::{
-    fingerprint_from_sdp, InviteCode, Opener, PairHandshake, PairKeys, PeerId, Sealer,
+    fingerprint_from_sdp, InviteCode, Opener, PairHandshake, PairKeys, PeerId, SealError, Sealer,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -466,6 +466,8 @@ struct Peer {
     dc: Option<DataChannel>,
     files: Option<DataChannel>,
     incoming: HashMap<u32, Incoming>,
+    /// Limits our transfers to them to what they accept at once.
+    sending: Option<Arc<tokio::sync::Semaphore>>,
     remote_described: bool,
     pending_ice: Vec<(String, i32, String)>,
     remote_fingerprint: Option<String>,
@@ -706,6 +708,12 @@ impl Actor {
         if let Some(id) = self.ids.get(relay_id) {
             return Some(id);
         }
+        // A room never has more than MAX_PEERS on the relay; a relay that
+        // says otherwise doesn't get us to open connection after connection.
+        let on_relay = self.peers.values().filter(|p| p.relay_id.is_some()).count();
+        if on_relay + 1 >= MAX_PEERS {
+            return None;
+        }
         let id = self.ids.assign(relay_id);
         let (handshake, outbound) = PairHandshake::start(&self.code, self.relay_me, relay_id);
         let mut new_peer = Peer::default();
@@ -769,11 +777,18 @@ impl Actor {
     fn relay_lost(&mut self) {
         self.relay = None;
         if self.evicted {
+            // Whoever was on the relay first had us removed. Friends we are
+            // already in a call with stay, peer to peer; there is just no
+            // getting back on the relay.
             let peers: Vec<PeerId> = self.peers.keys().copied().collect();
             for peer in peers {
-                self.drop_peer(peer);
+                self.orphan(peer);
             }
-            self.emit(RoomEvent::Removed);
+            if self.peers.values().any(|p| p.verified) {
+                self.emit(RoomEvent::RelayLost);
+            } else {
+                self.emit(RoomEvent::Removed);
+            }
             return;
         }
         self.emit(RoomEvent::RelayLost);
@@ -792,8 +807,7 @@ impl Actor {
                         let _ = internal.send(Internal::RelayBack { welcome, link });
                         return;
                     }
-                    // Our seat went to someone else; calls go on without the relay.
-                    Err(SignalError::Relay(RelayErrorCode::RoomFull)) => return,
+                    // Often our own old seat, until the relay notices it is dead.
                     Err(e) => tracing::debug!("relay still unreachable: {e}"),
                 }
                 delay = (delay * 2).min(RELAY_RETRY_MAX);
@@ -862,7 +876,10 @@ impl Actor {
                     tracing::warn!(peer = from, "dropping peer after bad envelope: {e}");
                     self.drop_peer(from);
                 } else {
-                    self.reject(from);
+                    // Only a message that fails authentication means a
+                    // different code; a gap in the counter is a lost message.
+                    let forged = !matches!(e, SealError::OutOfOrder { .. });
+                    self.reject(from, forged);
                 }
                 return;
             }
@@ -871,17 +888,20 @@ impl Actor {
             tracing::debug!(peer = from, "ignoring undecodable signal");
             return;
         };
-        if let Err(e) = self.on_signal(from, signal).await {
-            tracing::warn!(peer = from, "negotiation failed: {e}");
+        // The error can quote SDP or ICE lines, which hold IP addresses.
+        if self.on_signal(from, signal).await.is_err() {
+            tracing::warn!(peer = from, "negotiation failed");
         }
     }
 
-    fn reject(&mut self, peer: PeerId) {
+    fn reject(&mut self, peer: PeerId, vote: bool) {
         if let Some(p) = self.peers.get_mut(&peer) {
             p.rejected = true;
             retire(p.pc.take(), [p.dc.take(), p.files.take()]);
         }
-        self.vote_evict(peer);
+        if vote {
+            self.vote_evict(peer);
+        }
         self.emit(RoomEvent::PeerWrongCode { peer });
     }
 
@@ -969,6 +989,10 @@ impl Actor {
             }
             Signal::Answer { sdp } => {
                 let pc = self.pc(from)?;
+                // An answer to an offer we already replaced is stale.
+                if pc.signaling_state() != SignalingState::HaveLocalOffer {
+                    return Ok(());
+                }
                 let answer = SessionDescription::parse(&sdp, SdpType::Answer)?;
                 pc.set_remote_description(answer).await?;
                 self.after_remote_description(from, &sdp).await;
@@ -990,7 +1014,11 @@ impl Actor {
                 }
             }
             Signal::Restart => {
-                if self.is_offerer(from) {
+                // While our own restart offer is out, it already answers this.
+                let idle = self
+                    .pc(from)
+                    .is_ok_and(|pc| pc.signaling_state() == SignalingState::Stable);
+                if self.is_offerer(from) && idle {
                     self.send_offer(from, true).await?;
                 }
             }
@@ -1055,10 +1083,10 @@ impl Actor {
             match IceCandidate::parse(&mid, mline, &candidate) {
                 Ok(c) => {
                     if let Err(e) = pc.add_ice_candidate(c).await {
-                        tracing::debug!(peer, "ice candidate rejected: {e}");
+                        tracing::debug!(peer, "ice candidate rejected: {:?}", e.error_type);
                     }
                 }
-                Err(e) => tracing::debug!(peer, "bad ice candidate: {e}"),
+                Err(_) => tracing::debug!(peer, "bad ice candidate"),
             }
         }
     }
@@ -1342,10 +1370,17 @@ impl Actor {
     fn send_file(&mut self, name: String, data: Arc<[u8]>) {
         let id = self.next_file_id;
         self.next_file_id = self.next_file_id.wrapping_add(1);
-        for p in self.peers.values().filter(|p| p.verified) {
+        for p in self.peers.values_mut().filter(|p| p.verified) {
             let Some(dc) = p.files.clone() else { continue };
+            let slots = p
+                .sending
+                .get_or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(MAX_INCOMING_FILES)))
+                .clone();
             let (name, data) = (name.clone(), data.clone());
             tokio::spawn(async move {
+                let Ok(_slot) = slots.acquire_owned().await else {
+                    return;
+                };
                 let start = FileFrame::Start {
                     id,
                     name,

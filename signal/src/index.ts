@@ -290,17 +290,21 @@ export class Room extends DurableObject<Env> {
     } catch {
       return this.fail(ws, "bad_request");
     }
-    if (msg.t === "evict" && typeof msg.peer === "number" && msg.peer !== me) {
-      const target = msg.peer;
-      const voter = this.peers().find((p) => p.id === me);
-      // Only votes from people who were there first count.
-      if (voter && me < target && !voter.evicts?.includes(target)) {
+    if (typeof msg !== "object" || msg === null) return this.fail(ws, "bad_request");
+    if (msg.t === "evict" && Number.isInteger(msg.peer) && msg.peer !== me) {
+      const target = msg.peer as number;
+      const peers = this.peers();
+      const voter = peers.find((p) => p.id === me);
+      // Only votes from people who were there first count, and only against
+      // someone still here (ids can come back after the room hibernates).
+      if (voter && me < target && peers.some((p) => p.id === target) && !voter.evicts?.includes(target)) {
         this.save({ ...voter, evicts: [...(voter.evicts ?? []), target] });
         this.settleEviction(target);
       }
       return;
     }
-    if (msg.t !== "relay" || typeof msg.to !== "number" || typeof msg.data !== "string" || msg.to === me) {
+    if (msg.t === "evict") return this.fail(ws, "bad_request");
+    if (msg.t !== "relay" || !Number.isInteger(msg.to) || typeof msg.data !== "string" || msg.to === me) {
       return this.fail(ws, "bad_request");
     }
     if (msg.data.length > MAX_RELAY_DATA) return this.fail(ws, "too_large");

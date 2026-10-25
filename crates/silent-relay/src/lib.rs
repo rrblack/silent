@@ -22,7 +22,8 @@ use silent_core::proto::{
 };
 use silent_core::PeerId;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, watch, Mutex};
 
 const PEER_QUEUE: usize = 256;
 const RATE_BURST: f64 = 200.0;
@@ -35,10 +36,26 @@ pub struct RelayConfig {
     pub ice: IceConfig,
 }
 
+/// One connection in a room.
+struct Slot {
+    tx: mpsc::Sender<ServerMsg>,
+    /// Tells the connection to close, and why.
+    kick: watch::Sender<Option<Kick>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kick {
+    Evicted,
+    /// Its queue overflowed. Signaling is sealed with strict counters, so a
+    /// dropped message would break every later one; better to drop the
+    /// connection and let the client rejoin.
+    Overflow,
+}
+
 struct Room {
     next_id: PeerId,
     /// Ids only grow, so a lower id joined earlier.
-    peers: BTreeMap<PeerId, mpsc::Sender<ServerMsg>>,
+    peers: BTreeMap<PeerId, Slot>,
     /// Who asked for whom to be removed: target → voters.
     evict_votes: HashMap<PeerId, BTreeSet<PeerId>>,
     /// Join attempts left, refilled over time (see `JOIN_BURST`).
@@ -68,29 +85,42 @@ impl Room {
         if earlier.peek().is_none() || !earlier.all(|id| votes.contains(id)) {
             return;
         }
-        if let Some(tx) = self.remove(target) {
-            let _ = tx.try_send(ServerMsg::Error {
-                code: RelayErrorCode::Evicted,
-            });
+        self.kick(target, Kick::Evicted);
+    }
+
+    /// Queues `msg` for `peer`, or disconnects them if they can't keep up.
+    fn send(&mut self, peer: PeerId, msg: ServerMsg) {
+        let Some(slot) = self.peers.get(&peer) else {
+            return;
+        };
+        if let Err(TrySendError::Full(_)) = slot.tx.try_send(msg) {
+            self.kick(peer, Kick::Overflow);
+        }
+    }
+
+    fn kick(&mut self, peer: PeerId, why: Kick) {
+        if let Some(slot) = self.remove(peer) {
+            let _ = slot.kick.send(Some(why));
         }
     }
 
     /// Takes `peer` out of the room and tells the others.
-    fn remove(&mut self, peer: PeerId) -> Option<mpsc::Sender<ServerMsg>> {
-        let tx = self.peers.remove(&peer)?;
+    fn remove(&mut self, peer: PeerId) -> Option<Slot> {
+        let slot = self.peers.remove(&peer)?;
         self.evict_votes.remove(&peer);
         for voters in self.evict_votes.values_mut() {
             voters.remove(&peer);
         }
-        for other in self.peers.values() {
-            let _ = other.try_send(ServerMsg::Left { peer });
+        let others: Vec<PeerId> = self.peers.keys().copied().collect();
+        for other in others {
+            self.send(other, ServerMsg::Left { peer });
         }
         // Someone who had not voted may have been all that stood in the way.
         let targets: Vec<PeerId> = self.evict_votes.keys().copied().collect();
         for target in targets {
             self.settle_eviction(target);
         }
-        Some(tx)
+        Some(slot)
     }
 
     fn take_join(&mut self) -> bool {
@@ -114,9 +144,9 @@ struct AppState {
 
 struct Admitted {
     me: PeerId,
-    peers: Vec<PeerId>,
     tx: mpsc::Sender<ServerMsg>,
     rx: mpsc::Receiver<ServerMsg>,
+    kicked: watch::Receiver<Option<Kick>>,
 }
 
 pub fn router(config: RelayConfig) -> Router {
@@ -188,12 +218,25 @@ async fn admit(
     room.next_id += 1;
     let me = room.next_id;
     let peers: Vec<PeerId> = room.peers.keys().copied().collect();
-    for tx in room.peers.values() {
-        let _ = tx.try_send(ServerMsg::Joined { peer: me });
-    }
+    // The welcome goes first, so nothing a friend sends can overtake it.
     let (tx, rx) = mpsc::channel(PEER_QUEUE);
-    room.peers.insert(me, tx.clone());
-    Ok(Admitted { me, peers, tx, rx })
+    let _ = tx.try_send(ServerMsg::Welcome {
+        you: me,
+        peers: peers.clone(),
+        ice: state.config.ice.clone(),
+    });
+    for peer in peers {
+        room.send(peer, ServerMsg::Joined { peer: me });
+    }
+    let (kick, kicked) = watch::channel(None);
+    room.peers.insert(
+        me,
+        Slot {
+            tx: tx.clone(),
+            kick,
+        },
+    );
+    Ok(Admitted { me, tx, rx, kicked })
 }
 
 async fn depart(state: &AppState, nameplate: u16, me: PeerId) {
@@ -212,25 +255,31 @@ async fn vote_evict(state: &AppState, nameplate: u16, voter: PeerId, target: Pee
         return;
     };
     // Only votes from people who were there first count.
-    if voter < target && room.peers.contains_key(&target) {
+    if voter < target && room.peers.contains_key(&voter) && room.peers.contains_key(&target) {
         room.evict_votes.entry(target).or_default().insert(voter);
         room.settle_eviction(target);
     }
 }
 
-async fn forward(state: &AppState, nameplate: u16, from: PeerId, to: PeerId, data: String) {
-    let rooms = state.rooms.lock().await;
-    if let Some(tx) = rooms.get(&nameplate).and_then(|r| r.peers.get(&to)) {
-        let _ = tx.try_send(ServerMsg::Relay { from, data });
-    }
+/// Passes `data` on. False when the sender is no longer in the room.
+async fn forward(state: &AppState, nameplate: u16, from: PeerId, to: PeerId, data: String) -> bool {
+    let mut rooms = state.rooms.lock().await;
+    let Some(room) = rooms
+        .get_mut(&nameplate)
+        .filter(|r| r.peers.contains_key(&from))
+    else {
+        return false;
+    };
+    room.send(to, ServerMsg::Relay { from, data });
+    true
 }
 
 async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: Intent) {
     let Admitted {
         me,
-        peers,
         tx,
         mut rx,
+        mut kicked,
     } = match admit(&state, nameplate, intent).await {
         Ok(admitted) => admitted,
         Err(code) => return reject(socket, code).await,
@@ -238,11 +287,6 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
     tracing::debug!(room = nameplate, peer = me, "joined");
 
     let (mut sink, mut stream) = socket.split();
-    let _ = tx.try_send(ServerMsg::Welcome {
-        you: me,
-        peers,
-        ice: state.config.ice.clone(),
-    });
     let mut writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let last = matches!(msg, ServerMsg::Error { .. });
@@ -266,6 +310,10 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
                 writer_done = true;
                 break None;
             }
+            Ok(()) = kicked.changed() => {
+                let why = *kicked.borrow();
+                break (why == Some(Kick::Evicted)).then_some(RelayErrorCode::Evicted);
+            }
         };
         let now = Instant::now();
         tokens = (tokens + now.duration_since(last).as_secs_f64() * RATE_PER_SEC).min(RATE_BURST);
@@ -281,7 +329,9 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
                     break Some(RelayErrorCode::TooLarge)
                 }
                 Ok(ClientMsg::Relay { to, data }) if to != me => {
-                    forward(&state, nameplate, me, to, data).await
+                    if !forward(&state, nameplate, me, to, data).await {
+                        break None;
+                    }
                 }
                 Ok(ClientMsg::Evict { peer }) if peer != me => {
                     vote_evict(&state, nameplate, me, peer).await

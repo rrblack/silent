@@ -533,9 +533,12 @@ async fn restarting_ice_keeps_the_call() {
     alice.room.share_screen(Some(ScreenTarget::TestPattern));
     let track = bob.video(alice.room.me(), VideoKind::Screen).await;
 
-    // Both sides: the offerer restarts directly, the answerer asks for it.
-    alice.room.restart_connections();
-    bob.room.restart_connections();
+    // Both sides at once, a few times over: the offerer restarts directly,
+    // the answerer asks for it, and the requests cross.
+    for _ in 0..3 {
+        alice.room.restart_connections();
+        bob.room.restart_connections();
+    }
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     alice.room.send_chat("after restart");
@@ -715,4 +718,48 @@ async fn files_arrive_whole_and_chat_keeps_flowing() {
 
     let too_big = vec![0u8; silent_core::proto::MAX_FILE_BYTES as usize + 1];
     assert!(alice.room.send_file("huge", too_big).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_files_at_once_all_arrive() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut alice = Member::new(engine.create_room(settings(&relay, "Alice")).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+    bob.until(|e| matches!(e, RoomEvent::PeerMedia { .. }).then_some(()))
+        .await;
+
+    // More than a receiver takes at once; the sender queues the rest.
+    for i in 0..6u8 {
+        let size = if i == 0 { 2 * 1024 * 1024 } else { 10_000 };
+        alice
+            .room
+            .send_file(&format!("file{i}.bin"), vec![i; size])
+            .unwrap();
+    }
+    let mut names = Vec::new();
+    while names.len() < 6 {
+        let (name, data) = bob
+            .until(|e| match e {
+                RoomEvent::FileReceived { name, data, .. } => Some((name.clone(), data.clone())),
+                RoomEvent::FileFailed { .. } => panic!("transfer failed"),
+                _ => None,
+            })
+            .await;
+        let i: u8 = name[4..5].parse().unwrap();
+        assert!(data.iter().all(|&b| b == i), "{name} content");
+        names.push(name);
+    }
+    names.sort();
+    assert_eq!(names.len(), 6);
 }
