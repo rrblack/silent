@@ -120,6 +120,10 @@ struct RoomView: View {
                         Text(model.code).font(.headline).foregroundColor(Palette.text)
                     }
                 }
+                TimelineView(.periodic(from: model.startedAt, by: 1)) { context in
+                    Text(Self.elapsed(since: model.startedAt, now: context.date))
+                        .font(.footnote.monospacedDigit()).foregroundColor(Palette.subtext)
+                }
                 Spacer()
                 let connected = friends.contains { $0.words != nil }
                 Button("Stats") { showStats = true }.disabled(!connected)
@@ -212,6 +216,14 @@ struct RoomView: View {
                 Button("Volume…") { adjusting = friend.id }
             }
         }
+    }
+
+    /// Time in the call, like "4:05" or "1:02:03".
+    static func elapsed(since start: Date, now: Date) -> String {
+        let secs = max(0, Int(now.timeIntervalSince(start)))
+        return secs >= 3600
+            ? String(format: "%d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60)
+            : String(format: "%d:%02d", secs / 60, secs % 60)
     }
 
     private func isSpeaking(_ tile: Tile) -> Bool {

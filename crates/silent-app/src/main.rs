@@ -126,6 +126,8 @@ struct UiState {
     /// Received files, by chat line key, until the room is left.
     files: HashMap<String, (String, Vec<u8>)>,
     sent_files: u32,
+    /// When the room was entered, for the call timer.
+    started: std::time::Instant,
 }
 
 thread_local! {
@@ -250,6 +252,17 @@ fn ui(f: impl FnOnce(&mut UiState)) {
             f(state);
         }
     });
+}
+
+/// The call timer: "4:05", or "1:02:03" past an hour.
+fn elapsed_text(elapsed: Duration) -> SharedString {
+    let secs = elapsed.as_secs();
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}").into()
+    } else {
+        format!("{m}:{s:02}").into()
+    }
 }
 
 /// The local time of day for a chat line, like "14:05".
@@ -830,7 +843,9 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 speaking: HashSet::new(),
                 files: HashMap::new(),
                 sent_files: 0,
+                started: std::time::Instant::now(),
             };
+            w.set_elapsed(elapsed_text(Duration::ZERO));
             w.set_tiles(ModelRc::from(state.tiles.clone()));
             w.set_chat(ModelRc::from(state.chat.clone()));
             w.set_verifications(ModelRc::from(state.verifications.clone()));
@@ -1274,6 +1289,19 @@ fn main() -> anyhow::Result<()> {
     });
 
     accept_dropped_files(&window);
+    let weak = window.as_weak();
+    let clock_timer = slint::Timer::default();
+    clock_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_secs(1),
+        move || {
+            ui(|s| {
+                if let Some(w) = weak.upgrade() {
+                    w.set_elapsed(elapsed_text(s.started.elapsed()));
+                }
+            })
+        },
+    );
     window.run()?;
     drop(stats_timer);
 
@@ -1283,4 +1311,16 @@ fn main() -> anyhow::Result<()> {
             .block_on(tokio::time::timeout(Duration::from_secs(2), room.leave()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_timer_reads_like_a_clock() {
+        assert_eq!(elapsed_text(Duration::from_secs(0)), "0:00");
+        assert_eq!(elapsed_text(Duration::from_secs(245)), "4:05");
+        assert_eq!(elapsed_text(Duration::from_secs(3723)), "1:02:03");
+    }
 }

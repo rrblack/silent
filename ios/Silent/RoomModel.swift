@@ -62,6 +62,8 @@ final class RoomModel: ObservableObject {
     // Room
     @Published private(set) var room: SilentRoom?
     @Published private(set) var code = ""
+    /// When the room was entered, for the call timer.
+    private(set) var startedAt = Date()
     @Published private(set) var created = false
     @Published private(set) var micOn = true
     @Published private(set) var cameraOn = false
@@ -152,6 +154,7 @@ final class RoomModel: ObservableObject {
         self.room = room
         self.created = created
         code = room.code()
+        startedAt = Date()
         me = room.me()
         camera.attach(room)
         camera.onFailure = { [weak self] in self?.cameraFailed() }

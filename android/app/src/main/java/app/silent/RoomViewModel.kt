@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Handler
+import android.os.SystemClock
 import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -84,6 +85,9 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
 
     // Room
     var room by mutableStateOf<SilentRoom?>(null)
+        private set
+    /** `SystemClock.elapsedRealtime()` when the room was entered, for the call timer. */
+    var startedAt = 0L
         private set
     var code by mutableStateOf("")
         private set
@@ -179,6 +183,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 stats = emptyList()
                 created = code == null
                 room = r
+                startedAt = SystemClock.elapsedRealtime()
                 ActiveCall.room = r
                 this@RoomViewModel.code = r.code()
                 me = r.me()

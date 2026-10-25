@@ -42,7 +42,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 # Linux needs clang >= 21 for libwebrtc's prebuilt archive:
 export CC=clang-21 CXX=clang++-21
 
-cargo test --workspace                 # 57 tests incl. real in-process WebRTC calls (~35 s after first build)
+cargo test --workspace                 # 58 tests incl. real in-process WebRTC calls (~35 s after first build)
 cargo clippy --workspace --all-targets # must stay warning-free
 cargo fmt --all
 cargo run --release -p silent-app      # twice, to call yourself
@@ -99,3 +99,4 @@ Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` an
 12. `ScrollView` content in Slint stretches to the viewport; give the inner layout `height: self.preferred-height`.
 13. **Upstream webrtc-sys logs at verbose.** Every log line gets formatted and dcSCTP hex-dumps each data channel packet (CPU in every call, files under 1 MB/s). `third_party/webrtc-sys` patches the sink to warnings; keep that patch when upgrading.
 14. Hardware encoders are compiled in only when their headers are present at build time: `libva-dev` for VAAPI on Linux (CI installs it), the CUDA toolkit for NVENC on Linux. There is no Windows hardware encoder in webrtc-sys.
+15. **libwebrtc's task queues run at real-time priority** where allowed. Saturating the CPU with several video senders then starved its worker thread and leaked outgoing frames (GBs in minutes). `third_party/webrtc-sys` gives it a `FairTaskQueueFactory`; keep it when upgrading. To check: the desktop app plus three bots for several minutes, watching RSS (`ps -o rss=`).

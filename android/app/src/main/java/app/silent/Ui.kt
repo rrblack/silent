@@ -250,6 +250,7 @@ fun RoomScreen(
                 Text("Room code · tap to copy", color = Palette.subtext, fontSize = 11.sp)
                 Text(vm.code, color = Palette.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             }
+            CallTimer(vm.startedAt)
             val connected = friends.any { it.words != null }
             TextButton(onClick = { showStats = true }, enabled = connected) { Text("Stats", color = Palette.text) }
             TextButton(onClick = { showVerify = true }, enabled = connected) { Text("Verify", color = Palette.text) }
@@ -447,6 +448,25 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
                 .padding(horizontal = 8.dp, vertical = 3.dp),
         )
     }
+}
+
+/** Time in the call, like "4:05" or "1:02:03". */
+@Composable
+private fun CallTimer(startedAt: Long) {
+    var now by remember { mutableStateOf(android.os.SystemClock.elapsedRealtime()) }
+    LaunchedEffect(startedAt) {
+        while (true) {
+            now = android.os.SystemClock.elapsedRealtime()
+            delay(1000)
+        }
+    }
+    val secs = ((now - startedAt) / 1000).coerceAtLeast(0)
+    val text = if (secs >= 3600) {
+        "%d:%02d:%02d".format(secs / 3600, secs / 60 % 60, secs % 60)
+    } else {
+        "%d:%02d".format(secs / 60, secs % 60)
+    }
+    Text(text, color = Palette.subtext, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp))
 }
 
 /** Mute for me and the volume of one friend, on this phone only. */

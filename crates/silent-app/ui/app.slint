@@ -458,6 +458,8 @@ component Home inherits Rectangle {
 
 component Room inherits Rectangle {
     in property <string> code;
+    /// How long you have been in the room, like "12:34".
+    in property <string> elapsed;
     in property <[Tile]> tiles;
     in property <[ChatLine]> chat;
     in property <[Verification]> verifications;
@@ -526,6 +528,12 @@ component Room inherits Rectangle {
                         TouchArea { mouse-cursor: pointer; clicked => { root.copy-code(); } }
                     }
                 }
+            }
+            Text {
+                text: root.elapsed;
+                color: Palette.subtext;
+                font-size: 13px;
+                vertical-alignment: center;
             }
             Rectangle { horizontal-stretch: 1; }
             if root.notice != "": Text {
@@ -738,6 +746,8 @@ export component AppWindow inherits Window {
     in-out property <string> relay-url;
 
     in property <string> code;
+    /// How long you have been in the room, like "12:34".
+    in property <string> elapsed;
     in property <[Tile]> tiles;
     in property <[ChatLine]> chat;
     in property <[Verification]> verifications;
@@ -863,6 +873,7 @@ export component AppWindow inherits Window {
       }
       Room {
         code: root.code;
+        elapsed: root.elapsed;
         tiles: root.tiles;
         chat: root.chat;
         verifications: root.verifications;
