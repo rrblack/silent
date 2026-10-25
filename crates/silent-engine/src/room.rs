@@ -42,7 +42,7 @@ use silent_core::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::media::{
-    apply_encoding, hardware_encoder, stereo_computer_audio, test_pattern, AudioInput,
+    apply_encoding, hardware_encoder, stereo_computer_audio, test_pattern, view_scale, AudioInput,
     CameraProfile, CameraTarget, CodecChoice, LocalMedia, Producer, ScreenAudioInput,
     ScreenProfile, ScreenTarget, VideoInput, VideoKind, STREAM_AUDIO, STREAM_SCREEN_AUDIO,
 };
@@ -110,6 +110,12 @@ pub enum RoomEvent {
     /// They typed a different code. Nothing further is exchanged with them.
     PeerWrongCode {
         peer: PeerId,
+    },
+    /// They have the right code but a different version of Silent (`newer`
+    /// if theirs is newer). Nothing further is exchanged with them.
+    PeerIncompatible {
+        peer: PeerId,
+        newer: bool,
     },
     /// Direct encrypted connection is up. Sent again after a reconnect.
     PeerConnected {
@@ -193,6 +199,7 @@ enum Command {
     Restart,
     MuteFriend(PeerId, bool),
     FriendVolume(PeerId, f64),
+    CameraView(PeerId, u32, u32),
     SendFile(String, Arc<[u8]>),
     Stats(oneshot::Sender<Vec<PeerStats>>),
     Leave(oneshot::Sender<()>),
@@ -324,6 +331,7 @@ impl Room {
             next_file_id: 0,
             speaking: Vec::new(),
             levels_pending: false,
+            camera_frame: None,
             evicted: false,
             events: ev_tx,
             internal: int_tx,
@@ -405,6 +413,16 @@ impl Room {
     /// Silences a friend for you only (they aren't told), or unmutes them.
     pub fn set_friend_muted(&self, peer: PeerId, muted: bool) {
         let _ = self.commands.send(Command::MuteFriend(peer, muted));
+    }
+
+    /// A handle for telling `peer` how big you show their camera, so they send
+    /// it no larger. Give it to whatever draws their video.
+    pub fn camera_view(&self, peer: PeerId) -> CameraView {
+        CameraView {
+            peer,
+            commands: self.commands.clone(),
+            last: None,
+        }
     }
 
     /// Sets how loud a friend plays for you only: 1.0 is normal, 0.0 silent,
@@ -489,6 +507,37 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Tells a friend how big their camera is shown here (see
+/// [`Room::camera_view`]). Cheap to call for every frame: it only sends when
+/// the size changes.
+pub struct CameraView {
+    peer: PeerId,
+    commands: mpsc::UnboundedSender<Command>,
+    last: Option<(u32, u32)>,
+}
+
+impl CameraView {
+    /// `frame` is the friend's latest camera frame and `view` how big it is
+    /// shown, in pixels (upright, as the UI lays it out).
+    pub fn report(&mut self, frame: &BoxVideoFrame, view: (u32, u32)) {
+        if view.0 == 0 || view.1 == 0 {
+            return;
+        }
+        // The friend scales their frames as captured, before rotation.
+        let sideways = matches!(
+            frame.rotation,
+            VideoRotation::VideoRotation90 | VideoRotation::VideoRotation270
+        );
+        let view = if sideways { (view.1, view.0) } else { view };
+        if self.last != Some(view) {
+            self.last = Some(view);
+            let _ = self
+                .commands
+                .send(Command::CameraView(self.peer, view.0, view.1));
+        }
+    }
+}
+
 #[derive(Default)]
 struct Peer {
     /// Their current id on the relay; `None` once we can no longer signal
@@ -526,6 +575,10 @@ struct Peer {
     volume: Option<f64>,
     quality: stats::QualityMeter,
     video_senders: Vec<(VideoKind, RtpSender)>,
+    /// How big they show our camera (`ChannelMsg::Viewing`), once they say.
+    viewing: Option<(u32, u32)>,
+    /// How big we show their camera, as last told to them.
+    shown: Option<(u32, u32)>,
 }
 
 /// Maps relay ids to the ids used in events. Relay ids can come back for a
@@ -656,6 +709,8 @@ struct Actor {
     next_file_id: u32,
     speaking: Vec<PeerId>,
     levels_pending: bool,
+    /// The camera frame size the camera senders were last scaled for.
+    camera_frame: Option<(u32, u32)>,
     /// The relay removed us (see `RoomEvent::Removed`); don't rejoin.
     evicted: bool,
     events: mpsc::UnboundedSender<RoomEvent>,
@@ -682,7 +737,10 @@ impl Actor {
         );
         loop {
             tokio::select! {
-                _ = levels.tick() => self.read_levels(),
+                _ = levels.tick() => {
+                    self.follow_camera_size();
+                    self.read_levels();
+                }
                 _ = ice_refresh.tick() => {
                     if let Some(relay) = &self.relay {
                         let _ = relay.send(ClientMsg::RefreshIce);
@@ -970,11 +1028,17 @@ impl Actor {
         }
     }
 
-    fn reject(&mut self, peer: PeerId, vote: bool) {
+    /// Stops talking to `peer`: their connection closes and anything more
+    /// they send is ignored.
+    fn cut_off(&mut self, peer: PeerId) {
         if let Some(p) = self.peers.get_mut(&peer) {
             p.rejected = true;
             retire(p.pc.take(), [p.dc.take(), p.files.take()]);
         }
+    }
+
+    fn reject(&mut self, peer: PeerId, vote: bool) {
+        self.cut_off(peer);
         if vote {
             self.vote_evict(peer);
         }
@@ -999,7 +1063,12 @@ impl Actor {
                 send_h264,
             } => {
                 if version != PROTOCOL_VERSION {
-                    anyhow::bail!("peer speaks protocol v{version}");
+                    self.cut_off(from);
+                    self.emit(RoomEvent::PeerIncompatible {
+                        peer: from,
+                        newer: version > PROTOCOL_VERSION,
+                    });
+                    return Ok(());
                 }
                 let Some(peer) = self.peers.get_mut(&from) else {
                     return Ok(());
@@ -1367,12 +1436,14 @@ impl Actor {
             }
             for (kind, sender) in &p.video_senders {
                 let (on, encoding, scale) = match kind {
+                    // Smaller in bigger calls, and no bigger than they show it.
                     VideoKind::Camera => {
                         let encoding = &self.media.camera.encoding;
+                        let view = view_scale(self.camera_frame(), p.viewing.unwrap_or_default());
                         (
                             self.media_state.camera,
                             encoding,
-                            encoding.mesh_scale(friends),
+                            encoding.mesh_scale(friends).max(view),
                         )
                     }
                     // Screens stay sharp: text has to be readable.
@@ -1382,6 +1453,27 @@ impl Actor {
                 };
                 apply_encoding(sender, encoding, on, scale);
             }
+        }
+    }
+
+    /// The camera's frame size as captured, or its profile's limit before the
+    /// first frame.
+    fn camera_frame(&self) -> (u32, u32) {
+        let camera = &self.media.camera;
+        camera
+            .source
+            .frame_size()
+            .unwrap_or((camera.encoding.max_width, camera.encoding.max_height))
+    }
+
+    /// Rescales the camera senders when the camera's frame size changes (it
+    /// started, or another camera was picked), since how far each one is
+    /// scaled down depends on it.
+    fn follow_camera_size(&mut self) {
+        let frame = self.media.camera.source.frame_size();
+        if frame != self.camera_frame {
+            self.camera_frame = frame;
+            self.sync_senders(None);
         }
     }
 
@@ -1562,6 +1654,9 @@ impl Actor {
             Internal::DcOpen { peer } => {
                 let state = self.media_state;
                 self.send_channel(peer, &ChannelMsg::Media(state));
+                if let Some((width, height)) = self.peers.get(&peer).and_then(|p| p.shown) {
+                    self.send_channel(peer, &ChannelMsg::Viewing { width, height });
+                }
             }
             Internal::DcMessage { peer, data } => self.on_channel(peer, &data),
             Internal::FileData { peer, data } => self.on_file_frame(peer, &data),
@@ -1807,7 +1902,7 @@ impl Actor {
         self.broadcast(&ChannelMsg::Media(self.media_state));
     }
 
-    fn on_channel(&self, peer: PeerId, data: &[u8]) {
+    fn on_channel(&mut self, peer: PeerId, data: &[u8]) {
         if !self.peers.get(&peer).is_some_and(|p| p.verified) {
             return;
         }
@@ -1821,6 +1916,18 @@ impl Actor {
                 });
             }
             Ok(ChannelMsg::Media(state)) => self.emit(RoomEvent::PeerMedia { peer, state }),
+            Ok(ChannelMsg::Viewing { width, height }) => {
+                let frame = self.camera_frame();
+                let Some(p) = self.peers.get_mut(&peer) else {
+                    return;
+                };
+                let before = view_scale(frame, p.viewing.unwrap_or_default());
+                p.viewing = Some((width, height));
+                // Resizing a window sends many of these; most keep the step.
+                if view_scale(frame, (width, height)) != before {
+                    self.sync_senders(Some(peer));
+                }
+            }
             Err(_) => tracing::debug!(peer, "ignoring undecodable channel message"),
         }
     }
@@ -1838,6 +1945,12 @@ impl Actor {
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.volume = Some(volume);
                     p.apply_audio();
+                }
+            }
+            Command::CameraView(peer, width, height) => {
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    p.shown = Some((width, height));
+                    self.send_channel(peer, &ChannelMsg::Viewing { width, height });
                 }
             }
             Command::Restart => {

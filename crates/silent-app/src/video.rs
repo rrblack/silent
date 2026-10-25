@@ -8,11 +8,12 @@ use silent_engine::libwebrtc::prelude::*;
 use silent_engine::libwebrtc::video_stream::native::NativeVideoStream;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
 use silent_engine::render::{view_box, Fit, ViewSize};
+use silent_engine::CameraView;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 /// Reads frames from `track`, scales them to the size `tile` is shown at
-/// (never above `max_w x max_h`) and runs `deliver` with the pixels on the
-/// UI thread. Frames are dropped while the UI is still busy with the previous
+/// (never above `max_w x max_h`), tells the friend that size through `view`
+/// and runs `deliver` with the pixels on the UI thread. Frames are dropped while the UI is still busy with the previous
 /// one, so a slow UI never builds up latency.
 pub async fn pump<F>(
     track: RtcVideoTrack,
@@ -20,6 +21,7 @@ pub async fn pump<F>(
     max_h: u32,
     tile: Arc<ViewSize>,
     fit: Fit,
+    mut view: Option<CameraView>,
     deliver: F,
 ) where
     F: Fn(SharedPixelBuffer<Rgba8Pixel>) + Send + Sync + 'static,
@@ -28,6 +30,9 @@ pub async fn pump<F>(
     let mut stream = NativeVideoStream::new(track);
     let busy = Arc::new(AtomicBool::new(false));
     while let Some(frame) = stream.next().await {
+        if let Some(view) = &mut view {
+            view.report(&frame, tile.get());
+        }
         if busy.load(Ordering::Acquire) {
             continue;
         }

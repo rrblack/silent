@@ -895,3 +895,48 @@ async fn many_files_at_once_all_arrive() {
     names.sort();
     assert_eq!(names.len(), 6);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cameras_are_sent_at_the_size_friends_show_them() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut alice = Member::new(engine.create_room(settings(&relay, "Alice")).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+    let (a, b) = (alice.room.me(), bob.room.me());
+
+    alice.room.set_camera(Some(CameraTarget::TestPattern));
+    let track = bob.video(a, VideoKind::Camera).await;
+    let mut stream = NativeVideoStream::new(track);
+    let frame = tokio::time::timeout(STEP, stream.next())
+        .await
+        .expect("no camera frame")
+        .expect("stream ended");
+    let sending = |max: u32, min: u32| {
+        move |s: &silent_engine::stats::PeerStats| {
+            s.sending
+                .iter()
+                .any(|v| v.kind == Some(VideoKind::Camera) && v.height >= min && v.height <= max)
+        }
+    };
+
+    until_stats(&alice.room, b, sending(720, 540)).await;
+
+    // Bob shows Alice's 720p camera as a small thumbnail: she sends 180p.
+    let mut view = bob.room.camera_view(a);
+    view.report(&frame, (190, 110));
+    until_stats(&alice.room, b, sending(180, 2)).await;
+
+    // Bob makes it big: back to 720p.
+    view.report(&frame, (1280, 720));
+    until_stats(&alice.room, b, sending(720, 540)).await;
+}

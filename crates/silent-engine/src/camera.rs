@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use libwebrtc::native::yuv_helper;
 use libwebrtc::prelude::*;
-use libwebrtc::video_source::native::NativeVideoSource;
 use nokhwa::pixel_format::RgbAFormat;
 use nokhwa::utils::{
     ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
@@ -14,7 +13,7 @@ use nokhwa::utils::{
 };
 use nokhwa::Camera;
 
-use crate::media::{fit, push_i420, Encoding};
+use crate::media::{fit, push_i420, Encoding, Source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CameraDevice {
@@ -56,7 +55,7 @@ pub fn request_permission(on_done: impl Fn(bool) + Send + Sync + 'static) {
 }
 
 pub(crate) fn run(
-    source: NativeVideoSource,
+    source: Source,
     encoding: Encoding,
     index: u32,
     stop: Arc<AtomicBool>,

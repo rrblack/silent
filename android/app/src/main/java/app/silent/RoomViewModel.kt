@@ -252,6 +252,16 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                     leave("That code doesn't match the room. Check the words and try again.")
                 }
             }
+            is RoomUpdate.PeerIncompatible -> {
+                friends[update.peer]?.let { friends[update.peer] = it.copy(status = "Different version of Silent") }
+                system(
+                    if (update.newer) {
+                        "Someone joined with a newer version of Silent. Update yours to talk to them."
+                    } else {
+                        "Someone joined with an older version of Silent. They need to update to talk to you."
+                    },
+                )
+            }
             is RoomUpdate.PeerConnected -> friends[update.peer]?.let {
                 friends[update.peer] = it.copy(status = "", words = update.safetyWords.joinToString(" "))
             }

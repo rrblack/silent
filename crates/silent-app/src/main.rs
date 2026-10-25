@@ -17,8 +17,8 @@ use silent_core::InviteCode;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
 use silent_engine::render::{Fit, ViewSize};
 use silent_engine::{
-    camera, capture, AudioDevice, AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Quality,
-    Room, RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
+    camera, capture, AudioDevice, AudioInput, CameraProfile, CameraTarget, CameraView, Engine,
+    PeerId, Quality, Room, RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
 };
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 use tokio::task::JoinHandle;
@@ -79,7 +79,9 @@ fn tile_size(key: &str) -> Arc<ViewSize> {
     sizes.entry(key.to_string()).or_default().clone()
 }
 
-fn start_pump(peer: PeerId, kind: VideoKind, track: RtcVideoTrack) {
+/// Shows `track` in its tile; `view` tells a friend how big their camera is
+/// shown.
+fn start_pump(peer: PeerId, kind: VideoKind, track: RtcVideoTrack, view: Option<CameraView>) {
     let key = tile_key(peer, kind);
     let (max_w, max_h, fit) = match kind {
         VideoKind::Camera => (1280, 720, Fit::Cover),
@@ -87,11 +89,15 @@ fn start_pump(peer: PeerId, kind: VideoKind, track: RtcVideoTrack) {
     };
     let ui_key = key.clone();
     let tile = tile_size(&key);
-    let handle = backend()
-        .rt
-        .spawn(video::pump(track, max_w, max_h, tile, fit, move |pixels| {
-            ui(|s| s.set_frame(&ui_key, Image::from_rgba8(pixels)))
-        }));
+    let handle = backend().rt.spawn(video::pump(
+        track,
+        max_w,
+        max_h,
+        tile,
+        fit,
+        view,
+        move |pixels| ui(|s| s.set_frame(&ui_key, Image::from_rgba8(pixels))),
+    ));
     if let Some(old) = backend().pumps.lock().unwrap().insert(key, handle) {
         old.abort();
     }
@@ -563,6 +569,16 @@ impl UiState {
                     }
                 }
             }
+            RoomEvent::PeerIncompatible { peer, newer } => {
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    p.status = "Different version of Silent";
+                }
+                self.system(if newer {
+                    "Someone joined with a newer version of Silent. Update yours to talk to them."
+                } else {
+                    "Someone joined with an older version of Silent. They need to update to talk to you."
+                });
+            }
             RoomEvent::PeerConnected { peer, safety_words } => {
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.status = "";
@@ -840,8 +856,18 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
         let code = room.code().to_string();
         let has_mic = room.has_microphone();
         let mut events = room.take_events();
-        start_pump(me, VideoKind::Camera, room.local_video(VideoKind::Camera));
-        start_pump(me, VideoKind::Screen, room.local_video(VideoKind::Screen));
+        start_pump(
+            me,
+            VideoKind::Camera,
+            room.local_video(VideoKind::Camera),
+            None,
+        );
+        start_pump(
+            me,
+            VideoKind::Screen,
+            room.local_video(VideoKind::Screen),
+            None,
+        );
         *backend().room.lock().unwrap() = Some(room);
         let mine = backend().generation.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -903,7 +929,11 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
             }
             match &event {
                 RoomEvent::RemoteVideo { peer, kind, track } => {
-                    start_pump(*peer, *kind, track.clone())
+                    let mut view = None;
+                    if *kind == VideoKind::Camera && generation() == mine {
+                        with_room(|r| view = Some(r.camera_view(*peer)));
+                    }
+                    start_pump(*peer, *kind, track.clone(), view)
                 }
                 RoomEvent::PeerLeft { peer }
                 | RoomEvent::PeerVerified {

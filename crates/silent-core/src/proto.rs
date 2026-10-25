@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::handshake::PeerId;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const MAX_PEERS: usize = 4;
 pub const MAX_RELAY_DATA: usize = 64 * 1024;
 pub const MAX_NAME_CHARS: usize = 32;
@@ -205,8 +205,18 @@ pub fn new_session_id() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ChannelMsg {
-    Chat { text: String, sent_at_ms: u64 },
+    Chat {
+        text: String,
+        sent_at_ms: u64,
+    },
     Media(MediaState),
+    /// How big the sender shows the receiver's camera, in pixels in the
+    /// orientation the frames arrive in (before rotation), so the receiver
+    /// can send it no larger. 0 x 0 means unknown.
+    Viewing {
+        width: u32,
+        height: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

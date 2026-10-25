@@ -5,9 +5,10 @@
 //! if they typed the same code; the relay (or anyone watching it) learns
 //! nothing it could use to guess the code offline.
 //!
-//! The SPAKE2 identity binds the protocol version, the room and the two peer
+//! The SPAKE2 identity binds a handshake label, the room and the two peer
 //! ids, so a transcript cannot be replayed into another room or between a
-//! different pair of peers.
+//! different pair of peers. The app protocol version is checked later, in
+//! the sealed `Hello`.
 
 use hkdf::Hkdf;
 use sha2::Sha256;

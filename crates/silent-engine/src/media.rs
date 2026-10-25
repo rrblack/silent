@@ -3,7 +3,7 @@
 //! connection sends the same tracks (libwebrtc encodes once per connection,
 //! which keeps per-friend bitrate adaptation independent).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -104,6 +104,22 @@ impl Encoding {
     }
 }
 
+/// How far a camera sending `frame` sized pictures can be scaled down for a
+/// friend who shows it at `view` (both in the frames' own orientation, before
+/// rotation): as far as still covers the view, in steps so that resizing a
+/// window doesn't keep reconfiguring the encoder.
+pub(crate) fn view_scale(frame: (u32, u32), view: (u32, u32)) -> f64 {
+    const STEPS: [f64; 5] = [4.0, 3.0, 2.0, 1.5, 1.0];
+    if frame.0 == 0 || frame.1 == 0 || view.0 == 0 || view.1 == 0 {
+        return 1.0;
+    }
+    let room = f64::min(
+        f64::from(frame.0) / f64::from(view.0),
+        f64::from(frame.1) / f64::from(view.1),
+    );
+    STEPS.into_iter().find(|&s| s <= room).unwrap_or(1.0)
+}
+
 impl CameraProfile {
     pub fn encoding(self) -> Encoding {
         match self {
@@ -202,8 +218,43 @@ impl Drop for Producer {
     }
 }
 
+/// A video source that remembers how big the last frame it was given was,
+/// so each friend's encoder can be scaled for what they show. Cheap to clone.
+#[derive(Clone)]
+pub(crate) struct Source {
+    native: NativeVideoSource,
+    size: Arc<AtomicU64>,
+}
+
+impl Source {
+    fn new(native: NativeVideoSource) -> Self {
+        Self {
+            native,
+            size: Arc::default(),
+        }
+    }
+
+    /// The last frame's width and height as captured (before rotation).
+    pub(crate) fn frame_size(&self) -> Option<(u32, u32)> {
+        let v = self.size.load(Ordering::Relaxed);
+        (v != 0).then_some(((v >> 32) as u32, v as u32))
+    }
+
+    fn push(&self, buffer: I420Buffer, rotation: VideoRotation) {
+        let size = u64::from(buffer.width()) << 32 | u64::from(buffer.height());
+        self.size.store(size, Ordering::Relaxed);
+        let frame = VideoFrame {
+            rotation,
+            timestamp_us: now_us(),
+            frame_metadata: None,
+            buffer,
+        };
+        self.native.capture_frame(&frame);
+    }
+}
+
 pub(crate) struct LocalVideo {
-    pub source: NativeVideoSource,
+    pub source: Source,
     pub track: RtcVideoTrack,
     pub encoding: Encoding,
     pub producer: Option<Producer>,
@@ -218,7 +269,7 @@ impl LocalVideo {
         let source = NativeVideoSource::new(resolution, kind == VideoKind::Screen);
         let track = factory.create_video_track(kind.stream_id(), source.clone());
         Self {
-            source,
+            source: Source::new(source),
             track,
             encoding,
             producer: None,
@@ -594,18 +645,8 @@ pub(crate) fn paced(fps: u32, stop: &AtomicBool, mut tick: impl FnMut()) {
     }
 }
 
-pub(crate) fn push_i420(source: &NativeVideoSource, buffer: I420Buffer) {
-    push_rotated(source, buffer, VideoRotation::VideoRotation0);
-}
-
-fn push_rotated(source: &NativeVideoSource, buffer: I420Buffer, rotation: VideoRotation) {
-    let frame = VideoFrame {
-        rotation,
-        timestamp_us: now_us(),
-        frame_metadata: None,
-        buffer,
-    };
-    source.capture_frame(&frame);
+pub(crate) fn push_i420(source: &Source, buffer: I420Buffer) {
+    source.push(buffer, VideoRotation::VideoRotation0);
 }
 
 /// Where an app pushes its own camera or screen frames (mobile platforms,
@@ -613,7 +654,7 @@ fn push_rotated(source: &NativeVideoSource, buffer: I420Buffer, rotation: VideoR
 /// scaled down to the profile's limits before encoding.
 #[derive(Clone)]
 pub struct VideoInput {
-    pub(crate) source: NativeVideoSource,
+    pub(crate) source: Source,
     pub(crate) encoding: Encoding,
 }
 
@@ -711,13 +752,13 @@ impl VideoInput {
         if (tw, th) != (w, h) {
             buf = buf.scale(tw as i32, th as i32);
         }
-        push_rotated(&self.source, buf, rotation);
+        self.source.push(buf, rotation);
     }
 }
 
 /// Horizontal bands that scroll plus a sweeping bar, so encoders see real
 /// motion. Built from row fills to stay cheap even in debug builds.
-pub(crate) fn test_pattern(source: NativeVideoSource, encoding: Encoding, stop: Arc<AtomicBool>) {
+pub(crate) fn test_pattern(source: Source, encoding: Encoding, stop: Arc<AtomicBool>) {
     let (w, h) = (encoding.max_width, encoding.max_height);
     let bar_w = (w / 40).max(2);
     let mut n: u32 = 0;
@@ -831,6 +872,22 @@ fn h264_first(mut codecs: Vec<RtpCodecCapability>) -> Vec<RtpCodecCapability> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cameras_scale_to_cover_what_friends_show() {
+        // A 720p camera in a 464x260 grid tile: 640x360 still covers it.
+        assert_eq!(view_scale((1280, 720), (464, 260)), 2.0);
+        // A spotlight thumbnail.
+        assert_eq!(view_scale((1280, 720), (190, 110)), 4.0);
+        // Shown big, or at its own size: no scaling.
+        assert_eq!(view_scale((1280, 720), (900, 506)), 1.0);
+        assert_eq!(view_scale((640, 480), (640, 480)), 1.0);
+        // A 4:3 camera in a 16:9 tile: the width decides (426x320 covers it).
+        assert_eq!(view_scale((640, 480), (400, 225)), 1.5);
+        // Not known yet.
+        assert_eq!(view_scale((1280, 720), (0, 0)), 1.0);
+        assert_eq!(view_scale((0, 0), (300, 200)), 1.0);
+    }
 
     #[test]
     fn only_the_computer_audio_line_turns_stereo() {

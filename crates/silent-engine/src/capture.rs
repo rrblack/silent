@@ -10,9 +10,8 @@ use libwebrtc::desktop_capturer::{
 };
 use libwebrtc::native::yuv_helper;
 use libwebrtc::prelude::*;
-use libwebrtc::video_source::native::NativeVideoSource;
 
-use crate::media::{fit, paced, push_i420, Encoding, ScreenTarget};
+use crate::media::{fit, paced, push_i420, Encoding, ScreenTarget, Source};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
@@ -54,7 +53,7 @@ pub fn has_system_picker() -> bool {
 }
 
 pub(crate) fn run(
-    source: NativeVideoSource,
+    source: Source,
     encoding: Encoding,
     target: ScreenTarget,
     stop: Arc<AtomicBool>,

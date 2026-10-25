@@ -388,6 +388,11 @@ final class RoomModel: ObservableObject {
             } else if friends.isEmpty {
                 leave(reason: "That code doesn't match the room. Check the words and try again.")
             }
+        case .peerIncompatible(let peer, let newer):
+            friends[peer]?.status = "Different version of Silent"
+            system(newer
+                ? "Someone joined with a newer version of Silent. Update yours to talk to them."
+                : "Someone joined with an older version of Silent. They need to update to talk to you.")
         case .peerConnected(let peer, let safetyWords):
             friends[peer]?.status = ""
             friends[peer]?.words = safetyWords.joined(separator: " ")

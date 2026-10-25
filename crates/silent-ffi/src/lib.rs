@@ -17,8 +17,8 @@ use silent_engine::libwebrtc::video_stream::native::NativeVideoStream;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
 use silent_engine::render::{view_box, Fit, ViewSize};
 use silent_engine::{
-    AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Room, RoomError, RoomEvent,
-    ScreenProfile, ScreenTarget, Settings, VideoInput, VideoKind,
+    AudioInput, CameraProfile, CameraTarget, CameraView, Engine, PeerId, Room, RoomError,
+    RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoInput, VideoKind,
 };
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -105,6 +105,11 @@ pub enum RoomUpdate {
     },
     PeerWrongCode {
         peer: u32,
+    },
+    /// Right code, different version of Silent (`newer` if theirs is newer).
+    PeerIncompatible {
+        peer: u32,
+        newer: bool,
     },
     PeerConnected {
         peer: u32,
@@ -274,16 +279,25 @@ impl SilentRoom {
             view_sizes: view_sizes.clone(),
         });
 
+        let me = Arc::downgrade(&this);
         let handle = runtime().spawn(async move {
             while let Some(event) = events.recv().await {
                 let gone = match &event {
                     RoomEvent::RemoteVideo { peer, kind, track } => {
-                        let view = view_size(&view_sizes, *peer, *kind);
+                        let size = view_size(&view_sizes, *peer, *kind);
+                        let camera_view = match kind {
+                            VideoKind::Camera => me.upgrade().and_then(|room| {
+                                let room = room.room.lock().unwrap();
+                                room.as_ref().map(|r| r.camera_view(*peer))
+                            }),
+                            VideoKind::Screen => None,
+                        };
                         let pump = runtime().spawn(pump(
                             *peer,
                             *kind,
                             track.clone(),
-                            view,
+                            size,
+                            camera_view,
                             listener.clone(),
                         ));
                         if let Some(old) = pumps.lock().unwrap().insert((*peer, *kind), pump) {
@@ -374,8 +388,9 @@ impl SilentRoom {
     }
 
     /// Tells the room how big a friend's camera (or screen, with `screen`)
-    /// is shown, in pixels, so frames arrive no larger than that. Call it
-    /// whenever the view changes size.
+    /// is shown, in pixels, so frames arrive no larger than that (and the
+    /// friend sends their camera no larger). Call it whenever the view
+    /// changes size.
     pub fn set_view_size(&self, peer: u32, screen: bool, width: u32, height: u32) {
         let kind = if screen {
             VideoKind::Screen
@@ -527,6 +542,7 @@ async fn pump(
     kind: VideoKind,
     track: RtcVideoTrack,
     view: Arc<ViewSize>,
+    mut camera_view: Option<CameraView>,
     listener: Arc<dyn RoomListener>,
 ) {
     let (long_edge, fit) = match kind {
@@ -537,6 +553,9 @@ async fn pump(
     let mut stream = NativeVideoStream::new(track);
     let mut last = Instant::now() - RENDER_INTERVAL;
     while let Some(frame) = stream.next().await {
+        if let Some(camera_view) = &mut camera_view {
+            camera_view.report(&frame, view.get());
+        }
         if last.elapsed() < RENDER_INTERVAL {
             continue;
         }
@@ -567,6 +586,7 @@ fn to_update(event: RoomEvent) -> Option<RoomUpdate> {
             replaces,
         },
         RoomEvent::PeerWrongCode { peer } => RoomUpdate::PeerWrongCode { peer },
+        RoomEvent::PeerIncompatible { peer, newer } => RoomUpdate::PeerIncompatible { peer, newer },
         RoomEvent::PeerConnected { peer, safety_words } => RoomUpdate::PeerConnected {
             peer,
             safety_words: safety_words.iter().map(|w| w.to_string()).collect(),
