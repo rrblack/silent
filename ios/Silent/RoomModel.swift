@@ -219,7 +219,7 @@ final class RoomModel: ObservableObject {
         case .peerConnectionLost(let peer):
             friends[peer]?.status = "Reconnecting…"
         case .peerLeft(let peer):
-            if let friend = friends.removeValue(forKey: peer) {
+            if let friend = friends.removeValue(forKey: peer), friend.verified {
                 system("\(friend.name) left")
             }
             frames[TileKey(peer: peer, screen: false)] = nil

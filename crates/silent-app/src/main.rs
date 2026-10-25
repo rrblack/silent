@@ -421,7 +421,7 @@ impl UiState {
                 }
             }
             RoomEvent::PeerLeft { peer } => {
-                if let Some(p) = self.peers.remove(&peer) {
+                if let Some(p) = self.peers.remove(&peer).filter(|p| p.verified) {
                     self.system(format!("{} left", p.name));
                 }
                 let prefix = format!("{peer}:");

@@ -99,6 +99,9 @@ pub enum RoomEvent {
     PeerConnectionLost {
         peer: PeerId,
     },
+    /// Gone, whether or not they were verified. Every
+    /// [`RoomEvent::PeerJoining`] ends in this, a
+    /// [`RoomEvent::PeerVerified`] that replaces them, or the room closing.
     PeerLeft {
         peer: PeerId,
     },
@@ -1111,9 +1114,7 @@ impl Actor {
         if let Some(relay_id) = p.relay_id {
             self.ids.forget(relay_id);
         }
-        if p.verified {
-            self.emit(RoomEvent::PeerLeft { peer });
-        }
+        self.emit(RoomEvent::PeerLeft { peer });
     }
 
     async fn on_internal(&mut self, ev: Internal) {

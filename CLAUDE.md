@@ -7,7 +7,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 - Encrypted, account-free voice and video calls, screen sharing and chat for **up to 4 people**.
 - Rooms are temporary, joined with a code like `4071-amber-falcon-river`. **Nothing is stored or logged**, anywhere.
 - **Peer to peer:** a WebRTC mesh in which every pair connects directly, with TURN only as a fallback.
-- **Targets:** Windows, macOS, Linux (desktop app), Android (built, untested on a device), iOS (not started).
+- **Targets:** Windows, macOS, Linux (desktop app), Android (built, untested on a device), iOS (skeleton, builds for the simulator in CI).
 - **Owner:** Kyle (`rrblack` on GitHub), working on Windows with an Android phone. No Mac and no iPhone.
 
 ## Layout
@@ -22,6 +22,8 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 | `crates/silent-relay` | Rust signaling relay (dev, LAN, self-hosting) | Listens on `0.0.0.0:8787` by default. The desktop app also hosts one on loopback when none is running. |
 | `signal/` | The same relay as a Cloudflare Worker with Durable Objects | Must keep the exact wire protocol of `silent-relay`. Not deployed yet. |
 | `android/` | Kotlin + Jetpack Compose app, CameraX, MediaProjection | `build-native.sh` must run before Gradle. |
+| `ios/` | SwiftUI app, AVFoundation camera | XcodeGen `project.yml`; `build-native.sh` makes the XCFramework and Swift bindings (Mac only). See `ios/README.md`. |
+| `packaging/` | Icons, macOS `Info.plist`, Linux `.desktop`, `package.sh` | `package.sh` turns a release build into `dist/` (dmg, deb + tarball, zip). CI runs it. |
 | `docs/SECURITY.md` | Protocol and threat model | Update it whenever the protocol changes. |
 
 ## How a call works (short version)
@@ -31,6 +33,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 3. All signaling after SPAKE2 is sealed: `Hello{name}`, SDP, ICE. A wrong code shows up as a sealed message that fails to open.
 4. The higher peer id sends the offer. DTLS is authenticated by the fingerprints in that sealed SDP, so media and chat are end to end.
 5. Safety words come from the pair key plus both DTLS fingerprints.
+6. A dropped connection is ICE-restarted by the offerer (the answerer asks with a sealed `Restart`). If the relay drops, calls continue peer to peer and the room rejoins the relay on its own; the sealed session id in `Hello` lets friends swap the old connection for the new pair (`PeerVerified { replaces }`). Event peer ids are local to the room (`room::Ids`), not relay ids.
 
 ## Commands
 
@@ -38,7 +41,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 # Linux needs clang >= 21 for libwebrtc's prebuilt archive:
 export CC=clang-21 CXX=clang++-21
 
-cargo test --workspace                 # 35 tests incl. real in-process WebRTC calls (~15 s after first build)
+cargo test --workspace                 # 41 tests incl. real in-process WebRTC calls (~25 s after first build)
 cargo clippy --workspace --all-targets # must stay warning-free
 cargo fmt --all
 cargo run --release -p silent-app      # twice, to call yourself
@@ -49,6 +52,12 @@ SILENT_TEST_RELAY=http://127.0.0.1:8787 cargo test -p silent-relay   # protocol 
 # Android (needs NDK r28, cargo-ndk, aarch64-linux-android target)
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
 android/build-native.sh && (cd android && ./gradlew assembleDebug)
+
+# Packages (after cargo build --release -p silent-app -p silent-relay)
+packaging/package.sh                   # dist/: dmg on macOS, deb + tarball on Linux, zip on Windows
+
+# iOS (Mac only)
+ios/build-native.sh && (cd ios && xcodegen generate)
 ```
 
 Windows needs no extra setup beyond Rust plus VS Build Tools. `.cargo/config.toml` forces the static CRT, which the prebuilt libwebrtc requires.
@@ -57,10 +66,10 @@ CI (`.github/workflows/ci.yml`) runs:
 - fmt, clippy, the core and relay tests
 - the Worker protocol tests
 - the engine call tests on Linux
-- release builds for Linux, Windows and macOS
+- release builds and packages for Linux, Windows and macOS
 - the Android APK
 
-Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` and `silent-android` artifacts.
+Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` and `silent-android` artifacts. `.github/workflows/ios.yml` builds the iOS app for the simulator, only when `ios/` or `crates/silent-ffi` change (macOS minutes cost 10x on a private repo).
 
 ## Rules
 
@@ -84,3 +93,5 @@ Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` an
 8. Release builds strip symbols, which removes UniFFI's metadata. Mobile libraries use `--profile mobile` (`strip = "debuginfo"`).
 9. Windows: the static CRT is required (`.cargo/config.toml`). macOS: needs a recent Xcode (CI picks the latest stable).
 10. **Never drop a `PeerConnection`/`DataChannel` right after `close()`.** libwebrtc can still deliver queued callbacks (e.g. ICE state), and webrtc-sys frees the C++ observer with the last Rust handle, so the callback hits freed memory (intermittent SIGSEGV). `room::retire` clears handlers, closes, and parks handles for 10 s; `Peer`'s `Drop` goes through it. All engines share one process-wide factory for the same reason.
+11. **Each side sends with the first codec the *other* side lists.** Codec preferences on your transceivers decide what your friend sends you, not what you send. That's why a device announces `send_h264` in its `Hello` and the receiver orders its codecs for it (`Actor::prefer_codecs`).
+12. `ScrollView` content in Slint stretches to the viewport; give the inner layout `height: self.preferred-height`.

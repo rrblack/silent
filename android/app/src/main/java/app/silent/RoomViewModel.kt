@@ -174,7 +174,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 friends[update.peer] = it.copy(status = "Reconnecting…")
             }
             is RoomUpdate.PeerLeft -> {
-                friends.remove(update.peer)?.let { system("${it.name} left") }
+                friends.remove(update.peer)?.takeIf { it.verified }?.let { system("${it.name} left") }
                 slots.remove(TileKey(update.peer, false))
                 slots.remove(TileKey(update.peer, true))
             }

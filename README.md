@@ -5,7 +5,8 @@ No accounts, nothing stored. Share a code like `4071-amber-falcon-river` and you
 
 - **Peer to peer.** Every friend gets a direct WebRTC connection (TURN only as a fallback, or on request to hide your IP).
 - **End to end.** Codes are never sent anywhere. Peers prove they know the code with a PAKE (SPAKE2), seal all signaling with the resulting keys, and use that to authenticate the DTLS media connection. The relay only ever sees a room number and ciphertext. Safety words let friends confirm nobody is in the middle.
-- **Native.** Rust and libwebrtc, with a Slint UI. Windows, macOS and Linux.
+- **Native.** Rust and libwebrtc, with a Slint UI on Windows, macOS and Linux, Jetpack Compose on Android and SwiftUI on iOS (early).
+- **Keeps going.** Calls ride out network switches (ICE restart) and relay outages (the room rejoins by itself while media stays peer to peer).
 
 See [docs/SECURITY.md](docs/SECURITY.md) for the protocol and threat model, and [HANDOFF.md](HANDOFF.md) for the current state and the testing plan.
 
@@ -16,9 +17,11 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the protocol and threat model, and 
 | `crates/silent-core` | Invite codes, SPAKE2 pair handshake, sealed envelopes, safety words, wire types. Pure, no I/O. |
 | `crates/silent-engine` | Rooms: relay client, per-peer WebRTC connections, audio/camera/screen tracks, chat, stats. |
 | `crates/silent-app` | The desktop app (`silent` binary), Slint UI in `ui/app.slint`. |
-| `crates/silent-ffi` | UniFFI bindings of the engine for the mobile apps (Kotlin now, Swift later). |
+| `crates/silent-ffi` | UniFFI bindings of the engine for the mobile apps (Kotlin and Swift). |
 | `crates/uniffi-bindgen` | Generates those bindings from a built library. |
 | `android/` | Android app: Kotlin + Jetpack Compose, CameraX, MediaProjection. |
+| `ios/` | iOS app: SwiftUI, AVFoundation. A skeleton; see `ios/README.md`. |
+| `packaging/` | Icons and the script that turns release builds into a dmg, deb and zip. |
 | `crates/silent-relay` | Signaling relay in Rust, for local development and self-hosting. |
 | `signal/` | The same relay as a Cloudflare Worker with Durable Objects, for production. |
 
@@ -50,6 +53,9 @@ The first window hosts a local relay on 127.0.0.1:8787 if nothing else is servin
 | `SILENT_TEST_PATTERN=1` | Camera button sends a moving test pattern instead of the webcam. |
 | `SILENT_NO_AUDIO=1` | Don't open audio devices; send silence. |
 | `SILENT_LOG=debug` | Verbose logs to stderr (nothing is written to disk). |
+| `SILENT_VIDEO_CODEC=h264` or `vp8` | Override the video codec choice (H.264 when a hardware encoder is found, else VP8). |
+
+Shortcuts in a call: click a tile to spotlight it, double-click or F11 for full screen, Esc to go back, Ctrl+D to mute, Ctrl+E for the camera.
 
 ## Android
 
