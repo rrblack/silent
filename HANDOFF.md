@@ -71,6 +71,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] Click **+** next to the chat box and send a photo: it shows in both chats, and **Save…** writes it where you choose.
    - [ ] Drag a file from Explorer onto the window: "Drop to send" appears, and dropping sends it (not on Linux Wayland, where winit has no drag and drop; untested, no drag source in the cloud container). A file over 64 MB is refused without being read whole.
    - [ ] Click a tile: it fills the stage. A friend's screen share takes the stage by itself. Double-click or **F11** for full screen, **Esc** to come back.
+   - [ ] With the other window's camera on, make its tile small (spotlight someone else) and then big again: Stats in the other window shows its camera going out smaller and then back up within a few seconds, and the big tile looks sharp.
    - [ ] **Ctrl+D** mutes (the tile label turns red on both sides), **Ctrl+E** toggles the camera.
    - [ ] Settings → **Push to talk**: in the room you start muted; holding Space (outside the chat box; Esc leaves it) unmutes.
    - [ ] **Devices**: pick another microphone or speaker mid-call; the other window should hear the change at once.
@@ -101,6 +102,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
 - [ ] On a bad connection (a phone at the edge of Wi-Fi), the friend's tile says "weak connection" within a few seconds, and stops once it recovers.
 - [ ] With "Hide my IP" on, the call still connects. This needs TURN.
 - [ ] Four people at once: check CPU and battery.
+- [ ] Someone on an older or newer build joins: their tile says "Different version of Silent" and chat says who should update.
 
 ## 4. Deploying the relay (5 minutes, free)
 

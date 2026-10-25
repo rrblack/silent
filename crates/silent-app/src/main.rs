@@ -518,7 +518,11 @@ impl UiState {
                 let view = PeerView {
                     name: "Friend".into(),
                     status: "Connecting…",
-                    media: MediaState::default(),
+                    // Not "muted" before they've said anything (as on mobile).
+                    media: MediaState {
+                        mic: true,
+                        ..MediaState::default()
+                    },
                     words: None,
                     verified: false,
                     muted_for_me: false,
