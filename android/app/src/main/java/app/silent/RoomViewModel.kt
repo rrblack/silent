@@ -227,6 +227,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
             is RoomUpdate.RelayLost -> notice = "Relay offline: the call continues, reconnecting…"
             is RoomUpdate.RelayRestored -> if (notice.startsWith("Relay")) notice = ""
             is RoomUpdate.Speaking -> speaking = update.peers.toSet()
+            is RoomUpdate.Removed -> leave("You were removed from the room: your code doesn't match. Check the words and try again.")
             is RoomUpdate.FileIncoming -> chat.add(
                 ChatLine(
                     friends[update.from]?.name ?: "Friend",

@@ -550,6 +550,15 @@ impl UiState {
             RoomEvent::Speaking { peers } => {
                 self.speaking = peers.into_iter().collect();
             }
+            RoomEvent::Removed => {
+                // Runs after this borrow of the UI state ends.
+                slint::Timer::single_shot(Duration::ZERO, || {
+                    leave_room(Some(
+                        "You were removed from the room: your code doesn't match. Check the words and try again.",
+                    ))
+                });
+                return;
+            }
             RoomEvent::RelayRestored => {
                 if let Some(w) = self
                     .window()

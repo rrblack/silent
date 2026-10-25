@@ -330,6 +330,20 @@ fun RoomScreen(
     }
 }
 
+/** The call in a picture-in-picture window: the one tile that matters most. */
+@Composable
+fun PipScreen(vm: RoomViewModel, camera: CameraFeed) {
+    val friends = vm.friends.values.sortedBy { it.id }
+    val tile = friends.firstOrNull { it.screen }?.let { TileModel.Remote(it, screen = true) }
+        ?: friends.firstOrNull { it.id in vm.speaking && it.camera }?.let { TileModel.Remote(it, screen = false) }
+        ?: friends.firstOrNull { it.camera }?.let { TileModel.Remote(it, screen = false) }
+        ?: friends.firstOrNull()?.let { TileModel.Remote(it, screen = false) }
+        ?: TileModel.Me(vm.name.ifBlank { "You" }, vm.cameraOn, vm.micOn)
+    Box(Modifier.fillMaxSize().background(Palette.bg), contentAlignment = Alignment.Center) {
+        Tile(vm, camera, tile)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {

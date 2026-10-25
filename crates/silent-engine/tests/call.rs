@@ -335,6 +335,11 @@ async fn wrong_code_is_detected_and_isolated() {
         quiet.is_err() || !quiet.unwrap(),
         "wrong-code peer must never be verified"
     );
+
+    // Alice was there first, so her app has Mallory removed from the relay.
+    mallory
+        .until(|e| matches!(e, RoomEvent::Removed).then_some(()))
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

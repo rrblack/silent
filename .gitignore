@@ -10,3 +10,5 @@
 /ios/SilentFFI.xcframework
 /ios/Silent.xcodeproj
 /ios/Info.plist
+/ios/BroadcastInfo.plist
+/ios/*.entitlements

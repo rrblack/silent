@@ -164,6 +164,9 @@ pub enum RoomEvent {
     /// join.
     RelayLost,
     RelayRestored,
+    /// Everyone who was in the room before you had you removed: you typed a
+    /// different code than they did. The room is over for you.
+    Removed,
 }
 
 enum Command {
@@ -296,6 +299,7 @@ impl Room {
             next_file_id: 0,
             speaking: Vec::new(),
             levels_pending: false,
+            evicted: false,
             events: ev_tx,
             internal: int_tx,
         };
@@ -591,6 +595,8 @@ struct Actor {
     next_file_id: u32,
     speaking: Vec<PeerId>,
     levels_pending: bool,
+    /// The relay removed us (see `RoomEvent::Removed`); don't rejoin.
+    evicted: bool,
     events: mpsc::UnboundedSender<RoomEvent>,
     internal: mpsc::UnboundedSender<Internal>,
 }
@@ -737,6 +743,9 @@ impl Actor {
                 }
                 Err(_) => tracing::debug!(peer = from, "ignoring malformed frame"),
             },
+            ServerMsg::Error {
+                code: RelayErrorCode::Evicted,
+            } => self.evicted = true,
             ServerMsg::Welcome { .. } | ServerMsg::Error { .. } => {}
         }
     }
@@ -759,6 +768,14 @@ impl Actor {
 
     fn relay_lost(&mut self) {
         self.relay = None;
+        if self.evicted {
+            let peers: Vec<PeerId> = self.peers.keys().copied().collect();
+            for peer in peers {
+                self.drop_peer(peer);
+            }
+            self.emit(RoomEvent::Removed);
+            return;
+        }
         self.emit(RoomEvent::RelayLost);
         let peers: Vec<PeerId> = self.peers.keys().copied().collect();
         for peer in peers {
@@ -805,6 +822,7 @@ impl Actor {
             Ok(keys) => keys,
             Err(_) => {
                 peer.rejected = true;
+                self.vote_evict(from);
                 self.emit(RoomEvent::PeerWrongCode { peer: from });
                 return;
             }
@@ -863,7 +881,17 @@ impl Actor {
             p.rejected = true;
             retire(p.pc.take(), [p.dc.take(), p.files.take()]);
         }
+        self.vote_evict(peer);
         self.emit(RoomEvent::PeerWrongCode { peer });
+    }
+
+    /// Asks the relay to remove someone who typed a different code. It only
+    /// counts if we were in the room first (see `ClientMsg::Evict`).
+    fn vote_evict(&self, peer: PeerId) {
+        let relay_id = self.peers.get(&peer).and_then(|p| p.relay_id);
+        if let (Some(relay), Some(relay_id)) = (&self.relay, relay_id) {
+            let _ = relay.send(ClientMsg::Evict { peer: relay_id });
+        }
     }
 
     async fn on_signal(&mut self, from: PeerId, signal: Signal) -> anyhow::Result<()> {

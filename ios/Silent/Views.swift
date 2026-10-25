@@ -140,6 +140,11 @@ struct RoomView: View {
                 if model.cameraOn {
                     control("arrow.triangle.2.circlepath.camera", active: false, action: model.flipCamera)
                 }
+                // Starts and stops the broadcast extension, which streams the screen.
+                BroadcastButton()
+                    .frame(width: 52, height: 52)
+                    .background(model.screenOn ? Palette.accent : Palette.card)
+                    .clipShape(Circle())
                 control("bubble.left.fill", active: showChat) { showChat = true }
                 control("phone.down.fill", active: false, danger: true) { model.leave() }
             }

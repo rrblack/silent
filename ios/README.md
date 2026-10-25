@@ -3,13 +3,19 @@
 A SwiftUI app on the same Rust engine as Android and desktop, through the
 UniFFI bindings in `crates/silent-ffi`.
 
-**State:** voice, camera (front and back), chat, verify words and stats. CI
-builds it for the simulator (`.github/workflows/ios.yml`). It has never run
-on a device.
+**State:** voice, camera (front and back), chat, files, speaking indicators,
+verify words, stats and screen sharing. CI builds it for the simulator
+(`.github/workflows/ios.yml`). It has never run on a device.
+
+**Screen sharing** goes through a ReplayKit Broadcast Upload Extension
+(`Broadcast/`), a separate process with a 50 MB memory limit. It hands NV12
+frames to the app over a Unix socket in the App Group container
+(`Shared/ScreenSocket.swift`), and the app pushes them into the call. The App
+Group (`group.app.silent`) only exists in a signed build, so screen sharing
+can't work in the simulator build from CI. The frame rotation mapping is
+untested.
 
 **Missing:**
-- Screen sharing: it needs a ReplayKit Broadcast Upload Extension, a
-  separate process with a 50 MB memory limit that pushes frames to the app.
 - CallKit, so calls survive the lock screen like phone calls.
 - Signing: running on an iPhone needs an Apple Developer account ($99/yr).
 

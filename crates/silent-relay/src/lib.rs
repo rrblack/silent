@@ -5,7 +5,7 @@
 //! join/leave events at debug level. The relay never sees names, SDP or ICE
 //! candidates: those are sealed with keys only the peers hold.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,7 +37,10 @@ pub struct RelayConfig {
 
 struct Room {
     next_id: PeerId,
+    /// Ids only grow, so a lower id joined earlier.
     peers: BTreeMap<PeerId, mpsc::Sender<ServerMsg>>,
+    /// Who asked for whom to be removed: target → voters.
+    evict_votes: HashMap<PeerId, BTreeSet<PeerId>>,
     /// Join attempts left, refilled over time (see `JOIN_BURST`).
     joins: f64,
     joins_at: Instant,
@@ -48,6 +51,7 @@ impl Default for Room {
         Self {
             next_id: 0,
             peers: BTreeMap::new(),
+            evict_votes: HashMap::new(),
             joins: f64::from(JOIN_BURST),
             joins_at: Instant::now(),
         }
@@ -55,6 +59,40 @@ impl Default for Room {
 }
 
 impl Room {
+    /// Removes `target` when everyone who joined before them asked to.
+    fn settle_eviction(&mut self, target: PeerId) {
+        let Some(votes) = self.evict_votes.get(&target) else {
+            return;
+        };
+        let mut earlier = self.peers.range(..target).map(|(id, _)| id).peekable();
+        if earlier.peek().is_none() || !earlier.all(|id| votes.contains(id)) {
+            return;
+        }
+        if let Some(tx) = self.remove(target) {
+            let _ = tx.try_send(ServerMsg::Error {
+                code: RelayErrorCode::Evicted,
+            });
+        }
+    }
+
+    /// Takes `peer` out of the room and tells the others.
+    fn remove(&mut self, peer: PeerId) -> Option<mpsc::Sender<ServerMsg>> {
+        let tx = self.peers.remove(&peer)?;
+        self.evict_votes.remove(&peer);
+        for voters in self.evict_votes.values_mut() {
+            voters.remove(&peer);
+        }
+        for other in self.peers.values() {
+            let _ = other.try_send(ServerMsg::Left { peer });
+        }
+        // Someone who had not voted may have been all that stood in the way.
+        let targets: Vec<PeerId> = self.evict_votes.keys().copied().collect();
+        for target in targets {
+            self.settle_eviction(target);
+        }
+        Some(tx)
+    }
+
     fn take_join(&mut self) -> bool {
         let now = Instant::now();
         let refill = now.duration_since(self.joins_at).as_secs_f64() / f64::from(JOIN_REFILL_SECS);
@@ -161,13 +199,22 @@ async fn admit(
 async fn depart(state: &AppState, nameplate: u16, me: PeerId) {
     let mut rooms = state.rooms.lock().await;
     if let Some(room) = rooms.get_mut(&nameplate) {
-        room.peers.remove(&me);
-        for tx in room.peers.values() {
-            let _ = tx.try_send(ServerMsg::Left { peer: me });
-        }
+        room.remove(me);
         if room.peers.is_empty() {
             rooms.remove(&nameplate);
         }
+    }
+}
+
+async fn vote_evict(state: &AppState, nameplate: u16, voter: PeerId, target: PeerId) {
+    let mut rooms = state.rooms.lock().await;
+    let Some(room) = rooms.get_mut(&nameplate) else {
+        return;
+    };
+    // Only votes from people who were there first count.
+    if voter < target && room.peers.contains_key(&target) {
+        room.evict_votes.entry(target).or_default().insert(voter);
+        room.settle_eviction(target);
     }
 }
 
@@ -198,8 +245,9 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
     });
     let mut writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if sink.send(text(&msg)).await.is_err() {
-                return;
+            let last = matches!(msg, ServerMsg::Error { .. });
+            if sink.send(text(&msg)).await.is_err() || last {
+                break;
             }
         }
         let _ = sink.close().await;
@@ -234,6 +282,9 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
                 }
                 Ok(ClientMsg::Relay { to, data }) if to != me => {
                     forward(&state, nameplate, me, to, data).await
+                }
+                Ok(ClientMsg::Evict { peer }) if peer != me => {
+                    vote_evict(&state, nameplate, me, peer).await
                 }
                 _ => break Some(RelayErrorCode::BadRequest),
             },

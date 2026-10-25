@@ -16,8 +16,13 @@ targets:
     platform: iOS
     sources:
       - Silent
+      - Shared
       - Generated
     scheme: {}
+    entitlements:
+      path: Silent.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.silent]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.silent
@@ -36,8 +41,10 @@ targets:
         UIUserInterfaceStyle: Dark
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
     dependencies:
+      - target: SilentBroadcast
       - framework: SilentFFI.xcframework
         embed: false
+      - sdk: ReplayKit.framework
       - sdk: libc++.tbd
       - sdk: AVFoundation.framework
       - sdk: AudioToolbox.framework
@@ -56,3 +63,27 @@ targets:
       - sdk: SystemConfiguration.framework
       - sdk: UIKit.framework
       - sdk: VideoToolbox.framework
+  # Screen sharing: iOS runs this in its own process and hands it the screen.
+  SilentBroadcast:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Broadcast
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.silent.broadcast
+    entitlements:
+      path: SilentBroadcast.entitlements
+      properties:
+        com.apple.security.application-groups: [group.app.silent]
+    info:
+      path: BroadcastInfo.plist
+      properties:
+        CFBundleDisplayName: Silent
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
+    dependencies:
+      - sdk: ReplayKit.framework

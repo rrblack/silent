@@ -58,6 +58,7 @@ final class RoomModel: ObservableObject {
     @Published private(set) var micOn = true
     @Published private(set) var cameraOn = false
     @Published private(set) var frontCamera = true
+    @Published private(set) var screenOn = false
     @Published private(set) var notice = ""
     @Published private(set) var friends: [UInt32: Friend] = [:]
     @Published private(set) var chat: [ChatLine] = []
@@ -68,6 +69,7 @@ final class RoomModel: ObservableObject {
     private(set) var me: UInt32 = 0
 
     let camera = CameraFeed()
+    private let screen = ScreenReceiver()
     /// Received files, in memory only, until the room is left.
     private(set) var files: [String: (name: String, data: Data)] = [:]
     private var sentFiles = 0
@@ -136,6 +138,9 @@ final class RoomModel: ObservableObject {
         frames = [:]
         files = [:]
         camera.attach(room)
+        screenOn = false
+        screen.onSharing = { [weak self] on in self?.screenOn = on }
+        screen.start(room: room)
         startAudioSession()
         watchNetwork()
         UIApplication.shared.isIdleTimerDisabled = true
@@ -149,6 +154,8 @@ final class RoomModel: ObservableObject {
         self.room = nil
         camera.stop()
         camera.attach(nil)
+        screen.stop()
+        screenOn = false
         cameraOn = false
         network?.cancel()
         network = nil
@@ -306,6 +313,8 @@ final class RoomModel: ObservableObject {
             if notice.hasPrefix("Relay") { notice = "" }
         case .speaking(let peers):
             speaking = Set(peers)
+        case .removed:
+            leave(reason: "You were removed from the room: your code doesn't match. Check the words and try again.")
         case .fileIncoming(let from, let id, let name, let size):
             chat.append(ChatLine(
                 who: friends[from]?.name ?? "Friend",

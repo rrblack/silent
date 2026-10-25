@@ -239,3 +239,69 @@ async fn join_attempts_are_budgeted() {
         }
     );
 }
+
+async fn quiet(ws: &mut Ws) -> bool {
+    tokio::time::timeout(Duration::from_millis(500), ws.next())
+        .await
+        .is_err()
+}
+
+#[tokio::test]
+async fn newcomers_cannot_evict_earlier_peers() {
+    let base = relay_base().await;
+    let n = unique_nameplate();
+    let mut a = connect(&base, n, Intent::Create).await;
+    recv(&mut a).await;
+    let mut b = connect(&base, n, Intent::Join).await;
+    let ServerMsg::Welcome { you: b_id, .. } = recv(&mut b).await else {
+        panic!("no welcome")
+    };
+    let ServerMsg::Joined { .. } = recv(&mut a).await else {
+        panic!("no joined")
+    };
+    let a_id = b_id - 1;
+
+    send(&mut b, &ClientMsg::Evict { peer: a_id }).await;
+    assert!(quiet(&mut a).await, "a newcomer's vote must not count");
+
+    send(&mut a, &ClientMsg::Evict { peer: b_id }).await;
+    assert_eq!(
+        recv(&mut b).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::Evicted
+        }
+    );
+    assert_eq!(recv(&mut a).await, ServerMsg::Left { peer: b_id });
+}
+
+#[tokio::test]
+async fn eviction_needs_everyone_who_was_there_first() {
+    let base = relay_base().await;
+    let n = unique_nameplate();
+    let mut a = connect(&base, n, Intent::Create).await;
+    recv(&mut a).await;
+    let mut b = connect(&base, n, Intent::Join).await;
+    recv(&mut b).await;
+    recv(&mut a).await;
+    let mut m = connect(&base, n, Intent::Join).await;
+    let ServerMsg::Welcome { you: m_id, .. } = recv(&mut m).await else {
+        panic!("no welcome")
+    };
+    recv(&mut a).await;
+    recv(&mut b).await;
+
+    send(&mut a, &ClientMsg::Evict { peer: m_id }).await;
+    assert!(
+        quiet(&mut m).await,
+        "one of two earlier peers is not enough"
+    );
+    send(&mut b, &ClientMsg::Evict { peer: m_id }).await;
+    assert_eq!(
+        recv(&mut m).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::Evicted
+        }
+    );
+    assert_eq!(recv(&mut a).await, ServerMsg::Left { peer: m_id });
+    assert_eq!(recv(&mut b).await, ServerMsg::Left { peer: m_id });
+}

@@ -31,7 +31,8 @@ type ErrorCode =
   | "bad_request"
   | "too_large"
   | "rate_limited"
-  | "too_many_joins";
+  | "too_many_joins"
+  | "evicted";
 
 interface IceServer {
   urls: string[];
@@ -62,7 +63,11 @@ interface JoinBudget {
 interface Attachment {
   id: number;
   joins?: JoinBudget;
+  // Peers this one asked to remove (see the evict message).
+  evicts?: number[];
 }
+
+type Peer = { ws: WebSocket } & Attachment;
 
 const STUN: IceServer = { urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] };
 
@@ -180,13 +185,34 @@ export class Room extends DurableObject<Env> {
   private nextId = 0;
   private tokens = new Map<number, { tokens: number; at: number }>();
 
-  private peers(): Array<{ ws: WebSocket; id: number; joins?: JoinBudget }> {
-    const out: Array<{ ws: WebSocket; id: number; joins?: JoinBudget }> = [];
+  private peers(): Peer[] {
+    const out: Peer[] = [];
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a && ws.readyState === WebSocket.OPEN) out.push({ ws, id: a.id, joins: a.joins });
+      if (a && ws.readyState === WebSocket.OPEN) out.push({ ws, ...a });
     }
     return out;
+  }
+
+  private save(peer: Peer): void {
+    const { ws, ...attachment } = peer;
+    ws.serializeAttachment(attachment satisfies Attachment);
+  }
+
+  // Removes `target` once everyone who joined before them (lower ids) asked
+  // to. A newcomer can never remove the people who were already there.
+  private settleEviction(target: number): void {
+    const peers = this.peers();
+    const victim = peers.find((p) => p.id === target);
+    const earlier = peers.filter((p) => p.id < target);
+    if (!victim || earlier.length === 0 || !earlier.every((p) => p.evicts?.includes(target))) return;
+    try {
+      victim.ws.send(JSON.stringify({ t: "error", code: "evicted" }));
+      victim.ws.close(1008, "evicted");
+    } catch {
+      // already closed
+    }
+    this.depart(victim.ws);
   }
 
   // Takes one join attempt from the room's budget, or returns null when it
@@ -212,7 +238,7 @@ export class Room extends DurableObject<Env> {
       const budget = this.takeJoin(peers);
       if (!budget) return rejectSocket("too_many_joins");
       joins = budget;
-      for (const p of peers) p.ws.serializeAttachment({ id: p.id, joins } satisfies Attachment);
+      for (const p of peers) this.save({ ...p, joins });
     }
     if (peers.length >= MAX_PEERS) return rejectSocket("room_full");
 
@@ -258,11 +284,21 @@ export class Room extends DurableObject<Env> {
     if (!this.allow(me)) return this.fail(ws, "rate_limited");
     if (typeof message !== "string") return this.fail(ws, "bad_request");
 
-    let msg: { t?: unknown; to?: unknown; data?: unknown };
+    let msg: { t?: unknown; to?: unknown; data?: unknown; peer?: unknown };
     try {
       msg = JSON.parse(message);
     } catch {
       return this.fail(ws, "bad_request");
+    }
+    if (msg.t === "evict" && typeof msg.peer === "number" && msg.peer !== me) {
+      const target = msg.peer;
+      const voter = this.peers().find((p) => p.id === me);
+      // Only votes from people who were there first count.
+      if (voter && me < target && !voter.evicts?.includes(target)) {
+        this.save({ ...voter, evicts: [...(voter.evicts ?? []), target] });
+        this.settleEviction(target);
+      }
+      return;
     }
     if (msg.t !== "relay" || typeof msg.to !== "number" || typeof msg.data !== "string" || msg.to === me) {
       return this.fail(ws, "bad_request");
@@ -291,8 +327,14 @@ export class Room extends DurableObject<Env> {
     if (me === undefined) return;
     ws.serializeAttachment(null);
     this.tokens.delete(me);
+    const targets = new Set<number>();
     for (const p of this.peers()) {
-      if (p.id !== me) p.ws.send(JSON.stringify({ t: "left", peer: me }));
+      if (p.id === me) continue;
+      p.ws.send(JSON.stringify({ t: "left", peer: me }));
+      if (p.evicts?.includes(me)) this.save({ ...p, evicts: p.evicts.filter((id) => id !== me) });
+      for (const id of p.evicts ?? []) if (id !== me) targets.add(id);
     }
+    // Someone who had not voted may have been all that stood in the way.
+    for (const target of targets) this.settleEviction(target);
   }
 }

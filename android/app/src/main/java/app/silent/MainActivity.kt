@@ -2,12 +2,15 @@ package app.silent
 
 import android.Manifest
 import android.app.Activity
+import android.app.PictureInPictureParams
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.Rational
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -17,6 +20,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +45,27 @@ class MainActivity : ComponentActivity() {
 
     private val pickFile = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) sendFile(uri)
+    }
+
+    private var inPip by mutableStateOf(false)
+
+    /** Picture-in-picture shows the call in a small window over other apps. */
+    private fun pipParams(): PictureInPictureParams = PictureInPictureParams.Builder()
+        .setAspectRatio(Rational(3, 4))
+        .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setAutoEnterEnabled(vm.room != null) }
+        .build()
+
+    private fun enterPip(): Boolean = runCatching { enterPictureInPictureMode(pipParams()) }.getOrDefault(false)
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Android 12+ enters by itself (setAutoEnterEnabled).
+        if (vm.room != null && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) enterPip()
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPip = isInPictureInPictureMode
     }
 
     /** The file waiting for a place to be saved. */
@@ -103,16 +130,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 LaunchedEffect(inRoom) {
+                    runCatching { setPictureInPictureParams(pipParams()) }
                     if (inRoom) {
                         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     } else {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     }
                 }
-                // Back leaves the app, not the call: the call keeps running in the background.
-                BackHandler(enabled = inRoom) { moveTaskToBack(true) }
+                // Back leaves the app, not the call: it shrinks to picture-in-picture,
+                // or keeps running in the background.
+                BackHandler(enabled = inRoom) { if (!enterPip()) moveTaskToBack(true) }
                 DisposableEffect(Unit) { onDispose { camera.stop() } }
-                if (inRoom) {
+                if (inRoom && inPip) {
+                    PipScreen(vm, camera)
+                } else if (inRoom) {
                     RoomScreen(
                         vm, camera,
                         onShareScreen = {

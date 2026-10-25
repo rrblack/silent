@@ -130,6 +130,8 @@ pub enum RoomUpdate {
     },
     RelayLost,
     RelayRestored,
+    /// The others removed you: you typed a different code. Leave the room.
+    Removed,
     /// Who is talking now, yourself included as `me()`.
     Speaking {
         peers: Vec<u32>,
@@ -359,6 +361,34 @@ impl SilentRoom {
         self.screen.push_rgba(width, height, row_stride, &rgba);
     }
 
+    /// One screen frame in YUV 4:2:0 (iOS ReplayKit delivers NV12). Same
+    /// arguments as `push_camera_frame`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_screen_yuv(
+        &self,
+        width: u32,
+        height: u32,
+        y: Vec<u8>,
+        u: Vec<u8>,
+        v: Vec<u8>,
+        y_stride: u32,
+        uv_stride: u32,
+        uv_pixel_stride: u32,
+        rotation_degrees: u32,
+    ) {
+        self.screen.push_yuv420(
+            width,
+            height,
+            &y,
+            &u,
+            &v,
+            y_stride,
+            uv_stride,
+            uv_pixel_stride,
+            rotation_degrees,
+        );
+    }
+
     pub fn stats(&self) -> Vec<FriendStats> {
         let mut request = None;
         self.with_room(|r| request = Some(r.stats()));
@@ -476,6 +506,7 @@ fn to_update(event: RoomEvent) -> Option<RoomUpdate> {
         },
         RoomEvent::RelayLost => RoomUpdate::RelayLost,
         RoomEvent::RelayRestored => RoomUpdate::RelayRestored,
+        RoomEvent::Removed => RoomUpdate::Removed,
         RoomEvent::Speaking { peers } => RoomUpdate::Speaking { peers },
         RoomEvent::FileIncoming {
             from,

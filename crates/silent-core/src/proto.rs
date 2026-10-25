@@ -91,7 +91,16 @@ pub enum ServerMsg {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Relay { to: PeerId, data: String },
+    Relay {
+        to: PeerId,
+        data: String,
+    },
+    /// Asks the relay to remove `peer`, who failed the key exchange. The
+    /// relay removes them once every peer that joined before them has asked,
+    /// so a newcomer can never remove the people who were already there.
+    Evict {
+        peer: PeerId,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -113,6 +122,10 @@ pub enum RelayErrorCode {
     /// [`JOIN_BURST`]).
     #[error("too many attempts to join this room")]
     TooManyJoins,
+    /// Everyone who was in the room first asked for this peer to be removed
+    /// (see [`ClientMsg::Evict`]).
+    #[error("removed from the room")]
+    Evicted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
