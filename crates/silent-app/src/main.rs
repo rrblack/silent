@@ -88,6 +88,8 @@ struct PeerView {
     words: Option<String>,
     verified: bool,
     muted_for_me: bool,
+    /// The user said the safety words matched.
+    confirmed: bool,
 }
 
 /// Everything that lives on the UI thread.
@@ -237,6 +239,11 @@ fn ui(f: impl FnOnce(&mut UiState)) {
     });
 }
 
+/// The local time of day for a chat line, like "14:05".
+fn clock() -> SharedString {
+    chrono::Local::now().format("%H:%M").to_string().into()
+}
+
 fn initial(name: &str) -> SharedString {
     name.chars()
         .next()
@@ -273,6 +280,7 @@ impl UiState {
             mic,
             status: status.into(),
             is_me: peer == self.me,
+            confirmed: self.peers.get(&peer).is_some_and(|p| p.confirmed),
             speaking: kind == VideoKind::Camera && self.speaking.contains(&peer),
             muted_for_me: self.peers.get(&peer).is_some_and(|p| p.muted_for_me),
         }
@@ -326,12 +334,14 @@ impl UiState {
 
         let verifications: Vec<Verification> = self
             .peers
-            .values()
-            .filter_map(|p| {
+            .iter()
+            .filter_map(|(&id, p)| {
                 let words = p.words.as_ref()?;
                 Some(Verification {
+                    peer: id as i32,
                     name: p.name.as_str().into(),
                     words: words.as_str().into(),
+                    confirmed: p.confirmed,
                 })
             })
             .collect();
@@ -415,6 +425,7 @@ impl UiState {
                     words: None,
                     verified: false,
                     muted_for_me: false,
+                    confirmed: false,
                 };
                 self.peers.insert(peer, view);
             }
@@ -493,6 +504,7 @@ impl UiState {
             } => {
                 self.chat.push(ChatLine {
                     who: self.friend_name(from).into(),
+                    time: clock(),
                     text: format!(
                         "File: {name} ({}) · receiving…",
                         files::size_text(size as usize)
@@ -530,6 +542,7 @@ impl UiState {
                 let who = self.friend_name(from);
                 self.chat.push(ChatLine {
                     who: who.into(),
+                    time: clock(),
                     text: text.into(),
                     ..Default::default()
                 });
@@ -943,6 +956,15 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
+    window.on_confirm_words(|peer| {
+        ui(|s| {
+            if let Some(p) = s.peers.get_mut(&(peer as PeerId)) {
+                p.confirmed = !p.confirmed;
+            }
+            s.rebuild();
+        })
+    });
+
     window.on_tile_clicked(|key| {
         ui(|s| {
             s.focus = (s.focus.as_deref() != Some(key.as_str())).then(|| key.to_string());
@@ -999,6 +1021,7 @@ fn main() -> anyhow::Result<()> {
             let who: SharedString = s.my_name.as_str().into();
             s.chat.push(ChatLine {
                 who,
+                time: clock(),
                 text: text.into(),
                 mine: true,
                 ..Default::default()
@@ -1022,6 +1045,7 @@ fn main() -> anyhow::Result<()> {
                         let key = format!("me:{}", s.sent_files);
                         s.chat.push(ChatLine {
                             who: s.my_name.as_str().into(),
+                            time: clock(),
                             text: format!("File: {name} ({})", files::size_text(size)).into(),
                             mine: true,
                             file: key.as_str().into(),

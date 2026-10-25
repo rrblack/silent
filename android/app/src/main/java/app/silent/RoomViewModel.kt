@@ -36,11 +36,14 @@ data class Friend(
     val screen: Boolean = false,
     val words: String? = null,
     val mutedForMe: Boolean = false,
+    /** You compared safety words with them and they matched. */
+    val confirmed: Boolean = false,
 )
 
 data class ChatLine(
     val who: String,
     val text: String,
+    val time: String = java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")),
     val mine: Boolean = false,
     val system: Boolean = false,
     /** Set for a file line; the key to save it with. */
@@ -305,6 +308,10 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     fun file(key: String): Pair<String, ByteArray>? = files[key]
 
     fun notify(text: String) = system(text)
+
+    fun toggleConfirmed(peer: UInt) {
+        friends[peer]?.let { friends[peer] = it.copy(confirmed = !it.confirmed) }
+    }
 
     /** Silences a friend for this phone only. */
     fun toggleMuteFriend(peer: UInt) {

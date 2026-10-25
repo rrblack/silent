@@ -153,15 +153,7 @@ struct RoomView: View {
         .tint(Palette.accent)
         .background(Palette.bg.ignoresSafeArea())
         .sheet(isPresented: $showChat) { chat }
-        .alert("Check for eavesdroppers", isPresented: $showVerify) {
-            Button("Done", role: .cancel) {}
-        } message: {
-            let words = friends.compactMap { f in f.words.map { "\(f.name): \($0)" } }
-            Text(
-                "Read your words aloud with each friend. If they match, nobody is listening in. "
-                    + "If they differ, leave the room.\n\n" + words.joined(separator: "\n")
-            )
-        }
+        .sheet(isPresented: $showVerify) { verify }
         .sheet(isPresented: $showStats) { stats }
     }
 
@@ -185,7 +177,8 @@ struct RoomView: View {
                 }
                 label(
                     (friend.mic || screen ? "" : "muted · ") + friend.name + (screen ? "'s screen" : "")
-                        + (friend.mutedForMe && !screen ? " · muted for you" : ""),
+                        + (friend.mutedForMe && !screen ? " · muted for you" : "")
+                        + (friend.confirmed && !screen ? " · verified" : ""),
                     muted: !friend.mic && !screen
                 )
             }
@@ -249,7 +242,10 @@ struct RoomView: View {
                             Text(line.text).font(.footnote.italic()).foregroundColor(Palette.subtext)
                         } else {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(line.who).font(.caption.bold()).foregroundColor(line.mine ? Palette.accent : Palette.text)
+                                HStack(spacing: 6) {
+                                    Text(line.who).font(.caption.bold()).foregroundColor(line.mine ? Palette.accent : Palette.text)
+                                    Text(line.time, style: .time).font(.caption2).foregroundColor(Palette.subtext)
+                                }
                                 Text(line.text).foregroundColor(Palette.text)
                                 if let image = line.image {
                                     Image(uiImage: image).resizable().scaledToFit()
@@ -292,6 +288,29 @@ struct RoomView: View {
     private func sendDraft() {
         model.send(draft)
         draft = ""
+    }
+
+    private var verify: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Check for eavesdroppers").font(.headline)
+            Text("Read your words aloud with each friend. If they match, nobody is listening in. If they differ, leave the room.")
+                .font(.footnote).foregroundColor(Palette.subtext)
+            ForEach(friends.filter { $0.words != nil }) { friend in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(friend.name).font(.caption).foregroundColor(Palette.subtext)
+                    HStack {
+                        Text(friend.words ?? "").font(.title3.bold())
+                        Spacer()
+                        Button(friend.confirmed ? "Verified" : "They match") { model.toggleConfirmed(friend.id) }
+                            .foregroundColor(friend.confirmed ? Palette.ok : Palette.accent)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.panel.ignoresSafeArea())
     }
 
     private var stats: some View {

@@ -301,7 +301,18 @@ fun RoomScreen(
                     )
                     friends.filter { it.words != null }.forEach {
                         Text(it.name, color = Palette.subtext, fontSize = 12.sp)
-                        Text(it.words!!, color = Palette.text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                it.words!!, color = Palette.text, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { vm.toggleConfirmed(it.id) }) {
+                                Text(
+                                    if (it.confirmed) "Verified" else "They match",
+                                    color = if (it.confirmed) Palette.ok else Palette.accent,
+                                )
+                            }
+                        }
                     }
                 }
             },
@@ -394,7 +405,8 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
                 val f = tile.friend
                 label = f.name + (if (tile.screen) "'s screen" else "") +
                     (if (!tile.screen && !f.mic) " · muted" else "") +
-                    (if (!tile.screen && f.mutedForMe) " · muted for you" else "")
+                    (if (!tile.screen && f.mutedForMe) " · muted for you" else "") +
+                    (if (!tile.screen && f.confirmed) " · verified" else "")
                 val image = vm.slot(TileKey(f.id, tile.screen)).image.value
                 val showing = if (tile.screen) f.screen else f.camera
                 if (showing && image != null) {
@@ -460,8 +472,11 @@ private fun ChatPanel(vm: RoomViewModel, modifier: Modifier, onAttach: () -> Uni
                     Text(line.text, color = Palette.subtext, fontSize = 12.sp, fontStyle = FontStyle.Italic)
                 } else {
                     Column {
-                        Text(line.who, color = if (line.mine) Palette.accent else Palette.text,
-                            fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(line.who, color = if (line.mine) Palette.accent else Palette.text,
+                                fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(line.time, color = Palette.subtext, fontSize = 11.sp)
+                        }
                         Text(line.text, color = Palette.text, fontSize = 14.sp)
                         line.image?.let {
                             Image(

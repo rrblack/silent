@@ -59,8 +59,8 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - Windows SmartScreen will warn about an unknown publisher: click **More info**, then **Run anyway**.
 2. Window 1: type a name, click **Start a room**, then **Copy**. Window 2: paste the code and click **Join**.
 3. Check each of these:
-   - [ ] Both windows connect, and **Verify** shows the same four words in both.
-   - [ ] Chat works both ways.
+   - [ ] Both windows connect, and **Verify** shows the same four words in both. **They match** marks the friend as verified on their tile.
+   - [ ] Chat works both ways, with times next to names.
    - [ ] **Share screen → Test pattern**: Stats shows around 60 fps.
    - [ ] **Share screen** with a real screen, then a window.
    - [ ] **Camera** turns on and shows your webcam.

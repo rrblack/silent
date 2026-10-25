@@ -13,10 +13,13 @@ struct Friend: Identifiable {
     var screen = false
     var words: String?
     var mutedForMe = false
+    /// You compared safety words with them and they matched.
+    var confirmed = false
 }
 
 struct ChatLine: Identifiable {
     let id = UUID()
+    let time = Date()
     let who: String
     var text: String
     var mine = false
@@ -214,6 +217,10 @@ final class RoomModel: ObservableObject {
 
     func note(_ text: String) {
         system(text)
+    }
+
+    func toggleConfirmed(_ peer: UInt32) {
+        friends[peer]?.confirmed.toggle()
     }
 
     /// Silences a friend for this phone only.

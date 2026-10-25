@@ -10,6 +10,8 @@ export struct Tile {
     mic: bool,
     status: string,
     is-me: bool,
+    /// You compared safety words with them and they matched.
+    confirmed: bool,
     speaking: bool,
     muted-for-me: bool,
 }
@@ -34,8 +36,11 @@ export struct SourceItem {
 }
 
 export struct Verification {
+    peer: int,
     name: string,
     words: string,
+    /// You told the app the words matched.
+    confirmed: bool,
 }
 
 export global Palette {
@@ -147,7 +152,7 @@ component VideoTile inherits Rectangle {
         label := Text {
             x: 10px;
             width: parent.width - 20px;
-            text: (tile.mic || tile.kind == "screen" ? "" : "muted  ·  ") + tile.name + (tile.kind == "screen" ? "'s screen" : "") + (tile.is-me ? " (you)" : "");
+            text: (tile.mic || tile.kind == "screen" ? "" : "muted  ·  ") + tile.name + (tile.kind == "screen" ? "'s screen" : "") + (tile.is-me ? " (you)" : "") + (tile.confirmed && tile.kind == "camera" ? "  ·  verified" : "");
             color: Palette.text;
             font-size: root.small ? 11px : 12px;
             vertical-alignment: center;
@@ -503,6 +508,7 @@ component Room inherits Rectangle {
                             padding-bottom: 6px;
                             spacing: 2px;
                             if !line.system: HorizontalLayout {
+                                alignment: start;
                                 spacing: 6px;
                                 Text { text: line.who; color: line.mine ? Palette.accent : Palette.text; font-size: 12px; font-weight: 700; }
                                 Text { text: line.time; color: Palette.subtext; font-size: 11px; }
@@ -660,6 +666,7 @@ export component AppWindow inherits Window {
     callback tile-clicked(string);
     callback mute-friend(string);
     callback unfocus-tile;
+    callback confirm-words(int);
     callback devices-requested;
     callback devices-changed;
 
@@ -788,7 +795,17 @@ export component AppWindow inherits Window {
         for v in root.verifications: HorizontalLayout {
             spacing: 12px;
             Text { text: v.name; color: Palette.subtext; width: 120px; overflow: elide; vertical-alignment: center; }
-            Text { text: v.words; color: Palette.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+            Text { text: v.words; color: Palette.text; font-size: 16px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+            Text {
+                text: v.confirmed ? "Verified" : "They match";
+                color: v.confirmed ? Palette.ok : Palette.accent;
+                font-size: 13px;
+                vertical-alignment: center;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.confirm-words(v.peer); }
+                }
+            }
         }
         PillButton { label: "Done"; clicked => { root.verify-open = false; } }
     }
