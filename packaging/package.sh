@@ -28,7 +28,14 @@ Darwin)
     # enough until there is a Developer ID.
     codesign --force --deep --sign - "$app"
     ln -s /Applications "$stage/Applications"
-    hdiutil create -volname Silent -srcfolder "$stage" -ov -format UDZO "$dist/Silent-$version-macOS.dmg"
+    # hdiutil sometimes fails with "Resource busy" on CI machines; retry.
+    for attempt in 1 2 3 4 5; do
+        if hdiutil create -volname Silent -srcfolder "$stage" -ov -format UDZO "$dist/Silent-$version-macOS.dmg"; then
+            break
+        fi
+        if [ "$attempt" = 5 ]; then exit 1; fi
+        sleep $((attempt * 5))
+    done
     rm -rf "$stage"
     ;;
 Linux)

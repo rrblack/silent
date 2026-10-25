@@ -1,0 +1,58 @@
+name: Silent
+options:
+  bundleIdPrefix: app.silent
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # The Rust library is built for Apple Silicon simulators only.
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+targets:
+  Silent:
+    type: application
+    platform: iOS
+    sources:
+      - Silent
+      - Generated
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.silent
+        OTHER_LDFLAGS: ["-ObjC"]
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Silent
+        # Relay baked into the build when SILENT_RELAY_URL is set while running xcodegen.
+        SilentRelayURL: ${SILENT_RELAY_URL}
+        NSCameraUsageDescription: Silent shows your camera to the friends in your call, end-to-end encrypted. Nothing is recorded.
+        NSMicrophoneUsageDescription: Silent sends your voice to the friends in your call, end-to-end encrypted. Nothing is recorded.
+        UIBackgroundModes: [audio, voip]
+        UILaunchScreen: {}
+        UIUserInterfaceStyle: Dark
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    dependencies:
+      - framework: SilentFFI.xcframework
+        embed: false
+      - sdk: libc++.tbd
+      - sdk: AVFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreAudio.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreFoundation.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: GLKit.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: Network.framework
+      - sdk: OpenGLES.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: UIKit.framework
+      - sdk: VideoToolbox.framework

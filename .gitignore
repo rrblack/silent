@@ -5,3 +5,8 @@
 .env
 *.log
 /dist
+/ios/build
+/ios/Generated
+/ios/SilentFFI.xcframework
+/ios/Silent.xcodeproj
+/ios/Info.plist

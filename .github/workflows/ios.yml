@@ -1,0 +1,53 @@
+name: iOS
+
+# macOS minutes are expensive on private repos, so this only runs when the
+# iOS app or the bindings change, or by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - "crates/silent-ffi/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  simulator:
+    name: iOS app (simulator build)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Rust engine, Swift bindings, XCFramework
+        env:
+          SILENT_IOS_TARGETS: aarch64-apple-ios-sim
+        run: ios/build-native.sh
+
+      - name: Xcode project
+        env:
+          SILENT_RELAY_URL: ${{ vars.SILENT_RELAY_URL }}
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+
+      - name: Build for the simulator
+        run: |
+          cd ios
+          xcodebuild -project Silent.xcodeproj -scheme Silent -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/derived CODE_SIGNING_ALLOWED=NO build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: silent-ios-simulator
+          path: ios/build/derived/Build/Products/Debug-iphonesimulator/Silent.app
