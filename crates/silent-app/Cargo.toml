@@ -20,7 +20,7 @@ tokio-stream.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2"] }
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2", "unstable-winit-030"] }
 arboard = { version = "3", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Native open/save dialogs; the XDG portal on Linux, so no GTK.

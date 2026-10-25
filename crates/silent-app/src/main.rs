@@ -419,6 +419,19 @@ impl UiState {
         });
     }
 
+    /// Flashes the taskbar entry (bounces the Dock icon on macOS) if the
+    /// window is in the background, for a message or someone joining.
+    fn ask_attention(&self) {
+        use slint::winit_030::{winit::window::UserAttentionType, WinitWindowAccessor};
+        if let Some(window) = self.window.upgrade() {
+            window.window().with_winit_window(|w| {
+                if !w.has_focus() {
+                    w.request_user_attention(Some(UserAttentionType::Informational));
+                }
+            });
+        }
+    }
+
     fn friend_name(&self, peer: PeerId) -> String {
         self.peers
             .get(&peer)
@@ -453,6 +466,7 @@ impl UiState {
                 }
                 if returning.is_none() {
                     self.system(format!("{name} joined"));
+                    self.ask_attention();
                 }
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.name = name;
@@ -526,6 +540,7 @@ impl UiState {
                     file: format!("{from}:{id}").into(),
                     ..Default::default()
                 });
+                self.ask_attention();
             }
             RoomEvent::FileReceived {
                 from,
@@ -559,6 +574,7 @@ impl UiState {
                     text: text.into(),
                     ..Default::default()
                 });
+                self.ask_attention();
             }
             RoomEvent::RemoteVideo { .. } => {}
             RoomEvent::LocalMediaError { kind, message } => {
