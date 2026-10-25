@@ -70,6 +70,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] Click **+** next to the chat box and send a photo: it shows in both chats, and **Save…** writes it where you choose.
    - [ ] Click a tile: it fills the stage. A friend's screen share takes the stage by itself. Double-click or **F11** for full screen, **Esc** to come back.
    - [ ] **Ctrl+D** mutes (the tile label turns red on both sides), **Ctrl+E** toggles the camera.
+   - [ ] Settings → **Push to talk**: in the room you start muted; holding Space (outside the chat box; Esc leaves it) unmutes.
    - [ ] **Devices**: pick another microphone or speaker mid-call; the other window should hear the change at once.
 
 ### B. Two devices on the same Wi-Fi (PC + Android phone)
@@ -77,7 +78,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
 2. **PC app:** set Settings → Relay server to `http://127.0.0.1:8787`, then **Start a room**.
 3. **Phone:** install `app-debug.apk` and grant the camera, microphone and notification permissions. Set Settings → Relay server to `http://192.168.1.23:8787`, then join with the code.
 4. Check each of these:
-   - [ ] Voice both ways, with no echo on speakers.
+   - [ ] Voice both ways, with no echo on speakers. The speaker button switches between loudspeaker and earpiece (a headset always wins).
    - [ ] The phone camera shows upright on the PC.
    - [ ] Screen share works in both directions.
    - [ ] Chat works.

@@ -7,6 +7,10 @@ object ActiveCall {
     @Volatile
     var room: SilentRoom? = null
 
+    /** Loudspeaker (true) or earpiece (false), when no headset is connected. */
+    @Volatile
+    var speaker: Boolean = true
+
     /** Set by whoever owns the call, so the call notification can act on it. Main thread only. */
     var controls: CallControls? = null
 }

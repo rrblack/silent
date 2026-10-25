@@ -86,6 +86,8 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     var cameraOn by mutableStateOf(false)
         private set
     var frontCamera by mutableStateOf(true)
+    var speakerOn by mutableStateOf(true)
+        private set
     var screenOn by mutableStateOf(false)
     var notice by mutableStateOf("")
         private set
@@ -163,6 +165,8 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 friends.clear()
                 chat.clear()
                 ActiveCall.controls = controls
+                speakerOn = true
+                ActiveCall.speaker = true
                 if (created) system("Room created. Share the code with up to three friends.")
                 CallService.start(getApplication())
             }.onFailure { error = describe(it) }
@@ -319,6 +323,11 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         val muted = !friend.mutedForMe
         friends[peer] = friend.copy(mutedForMe = muted)
         room?.setFriendMuted(peer, muted)
+    }
+
+    fun toggleSpeaker() {
+        speakerOn = !speakerOn
+        CallService.setSpeaker(getApplication(), speakerOn)
     }
 
     fun flipCamera() {

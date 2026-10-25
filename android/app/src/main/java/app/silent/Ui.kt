@@ -37,6 +37,8 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.ScreenShare
@@ -268,7 +270,7 @@ fun RoomScreen(
         }
 
         Row(
-            Modifier.fillMaxWidth().padding(12.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -281,6 +283,9 @@ fun RoomScreen(
             }
             ControlButton(if (vm.screenOn) Icons.Filled.StopScreenShare else Icons.Filled.ScreenShare, vm.screenOn) {
                 if (vm.screenOn) onStopScreen() else onShareScreen()
+            }
+            ControlButton(if (vm.speakerOn) Icons.Filled.VolumeUp else Icons.Filled.Hearing, active = false) {
+                vm.toggleSpeaker()
             }
             ControlButton(Icons.Filled.Chat, showChat) { showChat = !showChat }
             ControlButton(Icons.Filled.CallEnd, active = false, danger = true) { vm.leave() }
@@ -445,7 +450,7 @@ private fun Avatar(name: String, status: String) {
 private fun ControlButton(icon: ImageVector, active: Boolean, danger: Boolean = false, onClick: () -> Unit) {
     FilledIconButton(
         onClick = onClick,
-        modifier = Modifier.size(54.dp),
+        modifier = Modifier.size(46.dp),
         colors = IconButtonDefaults.filledIconButtonColors(
             containerColor = when {
                 danger -> Palette.danger

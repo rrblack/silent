@@ -655,6 +655,11 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
         let win = window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let Some(w) = win.upgrade() else { return };
+            // With push to talk, the microphone is off until Space is held.
+            let push_to_talk = w.get_push_to_talk();
+            if push_to_talk {
+                with_room(|r| r.set_mic(false));
+            }
             let state = UiState {
                 window: win.clone(),
                 tiles: Rc::new(VecModel::default()),
@@ -664,7 +669,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 my_name,
                 created,
                 local: MediaState {
-                    mic: true,
+                    mic: !push_to_talk,
                     camera: false,
                     screen: false,
                 },
@@ -954,6 +959,16 @@ fn main() -> anyhow::Result<()> {
         if let Some(w) = weak.upgrade() {
             apply_devices(&w);
         }
+    });
+
+    window.on_push_to_talk_held(|held| {
+        ui(|s| {
+            if s.local.mic != held {
+                s.local.mic = held;
+                with_room(|r| r.set_mic(held));
+                s.rebuild();
+            }
+        })
     });
 
     window.on_confirm_words(|peer| {

@@ -220,6 +220,7 @@ component Home inherits Rectangle {
     in-out property <int> camera-quality;
     in-out property <int> screen-quality;
     in-out property <bool> relay-only;
+    in-out property <bool> push-to-talk;
     in-out property <string> relay-url;
     in property <[string]> microphones;
     in property <[string]> speakers;
@@ -336,6 +337,10 @@ component Home inherits Rectangle {
                         text: "Hide my IP from friends (relay all media)";
                         checked <=> root.relay-only;
                     }
+                    CheckBox {
+                        text: "Push to talk: hold Space to speak";
+                        checked <=> root.push-to-talk;
+                    }
                     Text { text: "Relay server"; color: Palette.subtext; font-size: 12px; }
                     LineEdit { text <=> root.relay-url; }
                     DevicePickers {
@@ -365,6 +370,7 @@ component Room inherits Rectangle {
     /// Index of the spotlighted tile, or -1 for the grid.
     in property <int> focus-index: -1;
     in property <bool> immersive: false;
+    in property <bool> push-to-talk: false;
     in-out property <string> draft;
     callback tile-clicked(string);
     callback mute-friend(string);
@@ -572,7 +578,7 @@ component Room inherits Rectangle {
         }
         if !root.immersive: Text {
             height: 20px;
-            text: "Click a tile to spotlight it  ·  Ctrl+D mute  ·  Ctrl+E camera  ·  F11 full screen";
+            text: (root.push-to-talk ? "Hold Space to talk  ·  " : "") + "Click a tile to spotlight it  ·  Ctrl+D mute  ·  Ctrl+E camera  ·  F11 full screen";
             color: Palette.subtext;
             font-size: 11px;
             horizontal-alignment: center;
@@ -624,6 +630,7 @@ export component AppWindow inherits Window {
     in-out property <int> camera-quality: 0;
     in-out property <int> screen-quality: 0;
     in-out property <bool> relay-only: false;
+    in-out property <bool> push-to-talk: false;
     in-out property <string> relay-url;
 
     in property <string> code;
@@ -667,6 +674,7 @@ export component AppWindow inherits Window {
     callback mute-friend(string);
     callback unfocus-tile;
     callback confirm-words(int);
+    callback push-to-talk-held(bool);
     callback devices-requested;
     callback devices-changed;
 
@@ -678,6 +686,7 @@ export component AppWindow inherits Window {
         camera-quality <=> root.camera-quality;
         screen-quality <=> root.screen-quality;
         relay-only <=> root.relay-only;
+        push-to-talk <=> root.push-to-talk;
         relay-url <=> root.relay-url;
         microphones: root.microphones;
         speakers: root.speakers;
@@ -715,6 +724,27 @@ export component AppWindow inherits Window {
                 root.unfocus-tile();
                 return accept;
             }
+            // Out of the chat box, so Space works for push to talk.
+            self.focus();
+            return accept;
+        }
+        reject
+      }
+      // Only keys nobody else took get here, so typing a space in the chat
+      // box never talks.
+      key-pressed(event) => {
+        if (root.push-to-talk && event.text == " ") {
+            if (!event.repeat) {
+                root.push-to-talk-held(true);
+            }
+            return accept;
+        }
+        reject
+      }
+      key-released(event) => {
+        if (root.push-to-talk && event.text == " ") {
+            root.push-to-talk-held(false);
+            return accept;
         }
         reject
       }
@@ -748,7 +778,11 @@ export component AppWindow inherits Window {
         }
         focus-index: root.focus-index;
         immersive: root.full-screen;
-        tile-clicked(key) => { root.tile-clicked(key); }
+        push-to-talk: root.push-to-talk;
+        tile-clicked(key) => {
+            keys.focus();
+            root.tile-clicked(key);
+        }
         mute-friend(key) => { root.mute-friend(key); }
         toggle-fullscreen => { root.full-screen = !root.full-screen; }
       }

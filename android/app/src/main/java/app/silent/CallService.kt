@@ -38,7 +38,7 @@ class CallService : Service() {
         } else {
             startForeground(ID, notification())
         }
-        if (intent?.action == null) routeAudio(true)
+        if (intent?.action == null || intent.action == ACTION_ROUTE) routeAudio(true)
         watchNetwork()
         return START_NOT_STICKY
     }
@@ -102,16 +102,22 @@ class CallService : Service() {
         }
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Prefer a headset if one is plugged in, otherwise the loudspeaker.
+            // Prefer a headset if one is plugged in, otherwise the loudspeaker
+            // or the earpiece, whichever the user picked.
+            val builtIn = if (ActiveCall.speaker) {
+                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            } else {
+                AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+            }
             val devices = audio.availableCommunicationDevices
             val preferred = devices.firstOrNull {
                 it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                     it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
                     it.type == AudioDeviceInfo.TYPE_USB_HEADSET
-            } ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            } ?: devices.firstOrNull { it.type == builtIn }
             preferred?.let { audio.setCommunicationDevice(it) }
         } else {
-            audio.isSpeakerphoneOn = !audio.isWiredHeadsetOn
+            audio.isSpeakerphoneOn = ActiveCall.speaker && !audio.isWiredHeadsetOn
         }
     }
 
@@ -120,9 +126,18 @@ class CallService : Service() {
         private const val ACTION_MUTE = "app.silent.MUTE"
         private const val ACTION_LEAVE = "app.silent.LEAVE"
         private const val ACTION_REFRESH = "app.silent.REFRESH"
+        private const val ACTION_ROUTE = "app.silent.ROUTE"
 
         fun start(context: Context) =
             context.startForegroundService(Intent(context, CallService::class.java))
+
+        /** Moves call audio to the loudspeaker or the earpiece. */
+        fun setSpeaker(context: Context, on: Boolean) {
+            ActiveCall.speaker = on
+            if (ActiveCall.room != null) {
+                context.startService(Intent(context, CallService::class.java).setAction(ACTION_ROUTE))
+            }
+        }
 
         /** Redraws the notification, e.g. after muting from the app. */
         fun refresh(context: Context) {
