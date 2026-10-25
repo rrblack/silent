@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use silent_core::proto::MediaState;
@@ -38,6 +38,8 @@ struct Backend {
     /// and file dialogs can tell they are no longer current.
     generation: AtomicU64,
     pumps: Mutex<HashMap<String, JoinHandle<()>>>,
+    /// How big each tile is shown, by tile key, for the pumps.
+    tile_sizes: Mutex<HashMap<String, Arc<video::TileSize>>>,
     /// The computer's sound going out with the screen share, if chosen.
     computer_audio: Mutex<Option<computer_audio::ComputerAudio>>,
 }
@@ -71,16 +73,22 @@ fn tile_key(peer: PeerId, kind: VideoKind) -> String {
     }
 }
 
+fn tile_size(key: &str) -> Arc<video::TileSize> {
+    let mut sizes = backend().tile_sizes.lock().unwrap();
+    sizes.entry(key.to_string()).or_default().clone()
+}
+
 fn start_pump(peer: PeerId, kind: VideoKind, track: RtcVideoTrack) {
     let key = tile_key(peer, kind);
-    let (max_w, max_h) = match kind {
-        VideoKind::Camera => (1280, 720),
-        VideoKind::Screen => (1920, 1080),
+    let (max_w, max_h, fit) = match kind {
+        VideoKind::Camera => (1280, 720, video::Fit::Cover),
+        VideoKind::Screen => (1920, 1080, video::Fit::Contain),
     };
     let ui_key = key.clone();
+    let tile = tile_size(&key);
     let handle = backend()
         .rt
-        .spawn(video::pump(track, max_w, max_h, move |pixels| {
+        .spawn(video::pump(track, max_w, max_h, tile, fit, move |pixels| {
             ui(|s| s.set_frame(&ui_key, Image::from_rgba8(pixels)))
         }));
     if let Some(old) = backend().pumps.lock().unwrap().insert(key, handle) {
@@ -1019,6 +1027,7 @@ fn main() -> anyhow::Result<()> {
         room: Mutex::new(None),
         generation: AtomicU64::new(0),
         pumps: Mutex::new(HashMap::new()),
+        tile_sizes: Mutex::new(HashMap::new()),
         computer_audio: Mutex::new(None),
     };
     if BACKEND.set(state).is_err() {
@@ -1224,6 +1233,11 @@ fn main() -> anyhow::Result<()> {
             }
             s.rebuild();
         })
+    });
+
+    window.on_tile_resized(|key, width, height| {
+        let (w, h) = (width.max(0) as u32, height.max(0) as u32);
+        tile_size(&key).set(w, h);
     });
 
     window.on_friend_volume(|key, volume| {

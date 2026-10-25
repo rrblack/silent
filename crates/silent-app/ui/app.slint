@@ -142,6 +142,17 @@ component VideoTile inherits Rectangle {
     callback double-clicked;
     callback mute-toggled;
     callback volume-changed(int);
+    /// The tile's size in physical pixels, so video is converted no larger
+    /// than it is shown.
+    callback resized(string, int, int);
+    property <string> key: tile.key;
+    function report-size() {
+        root.resized(tile.key, Math.round(self.width / 1phx), Math.round(self.height / 1phx));
+    }
+    init => { self.report-size(); }
+    changed width => { self.report-size(); }
+    changed height => { self.report-size(); }
+    changed key => { self.report-size(); }
     border-radius: small ? 8px : 12px;
     clip: true;
     background: Palette.card;
@@ -476,6 +487,7 @@ component Room inherits Rectangle {
     callback tile-clicked(string);
     callback mute-friend(string);
     callback friend-volume(string, int);
+    callback tile-resized(string, int, int);
     callback toggle-fullscreen;
     callback toggle-mic;
     callback toggle-camera;
@@ -599,6 +611,7 @@ component Room inherits Rectangle {
                     double-clicked => { root.toggle-fullscreen(); }
                     mute-toggled => { root.mute-friend(t.key); }
                     volume-changed(v) => { root.friend-volume(t.key, v); }
+                    resized(key, w, h) => { root.tile-resized(key, w, h); }
                 }
             }
 
@@ -791,6 +804,7 @@ export component AppWindow inherits Window {
     callback tile-clicked(string);
     callback mute-friend(string);
     callback friend-volume(string, int);
+    callback tile-resized(string, int, int);
     callback unfocus-tile;
     callback confirm-words(int);
     callback push-to-talk-held(bool);
@@ -913,6 +927,7 @@ export component AppWindow inherits Window {
         }
         mute-friend(key) => { root.mute-friend(key); }
         friend-volume(key, v) => { root.friend-volume(key, v); }
+        tile-resized(key, w, h) => { root.tile-resized(key, w, h); }
         toggle-fullscreen => { root.full-screen = !root.full-screen; }
       }
     }
