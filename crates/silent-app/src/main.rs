@@ -3,7 +3,7 @@
 mod video;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -12,8 +12,8 @@ use silent_core::proto::MediaState;
 use silent_core::InviteCode;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
 use silent_engine::{
-    camera, capture, AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Room, RoomError,
-    RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
+    camera, capture, AudioDevice, AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Room,
+    RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
 };
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 use tokio::task::JoinHandle;
@@ -100,10 +100,127 @@ struct UiState {
     local: MediaState,
     peers: BTreeMap<PeerId, PeerView>,
     frames: HashMap<String, Image>,
+    /// Key of the spotlighted tile.
+    focus: Option<String>,
+    /// Friends' screen shares already on screen, so only new ones take the
+    /// spotlight by themselves.
+    screens_seen: HashSet<String>,
 }
 
 thread_local! {
     static UI: RefCell<Option<UiState>> = const { RefCell::new(None) };
+    static DEVICES: RefCell<Devices> = RefCell::new(Devices::default());
+}
+
+/// The devices the pickers list, after their first "default" entry, and the
+/// choice last applied. Kept in memory only.
+#[derive(Default)]
+struct Devices {
+    microphones: Vec<AudioDevice>,
+    speakers: Vec<AudioDevice>,
+    cameras: Vec<camera::CameraDevice>,
+    microphone: Option<String>,
+    speaker: Option<String>,
+    camera: Option<u32>,
+}
+
+impl Devices {
+    /// The camera to open: the chosen one, else the first.
+    fn camera_target(&self) -> Option<CameraTarget> {
+        if test_patterns() {
+            return Some(CameraTarget::TestPattern);
+        }
+        match self.camera {
+            Some(index) => Some(CameraTarget::Device(index)),
+            None => camera::list_cameras()
+                .first()
+                .map(|c| CameraTarget::Device(c.index)),
+        }
+    }
+}
+
+/// Lists devices off the UI thread (opening the audio module can take a
+/// moment), then fills the pickers, keeping the current choices selected.
+fn refresh_devices(window: slint::Weak<AppWindow>) {
+    std::thread::spawn(move || {
+        let audio = backend().engine.audio_devices();
+        let cameras = camera::list_cameras();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = window.upgrade() else { return };
+            DEVICES.with(|d| {
+                let mut d = d.borrow_mut();
+                let position = |list: &[AudioDevice], id: &Option<String>| {
+                    id.as_ref()
+                        .and_then(|id| list.iter().position(|x| &x.id == id))
+                        .map_or(0, |i| i as i32 + 1)
+                };
+                let names = |first: &str, rest: Vec<String>| {
+                    let mut all: Vec<SharedString> = vec![first.into()];
+                    all.extend(rest.into_iter().map(SharedString::from));
+                    ModelRc::new(VecModel::from(all))
+                };
+                w.set_microphones(names(
+                    "System default",
+                    audio.microphones.iter().map(|m| m.name.clone()).collect(),
+                ));
+                w.set_speakers(names(
+                    "System default",
+                    audio.speakers.iter().map(|m| m.name.clone()).collect(),
+                ));
+                w.set_cameras(names(
+                    "First camera",
+                    cameras.iter().map(|c| c.name.clone()).collect(),
+                ));
+                w.set_microphone(position(&audio.microphones, &d.microphone));
+                w.set_speaker(position(&audio.speakers, &d.speaker));
+                w.set_camera(
+                    d.camera
+                        .and_then(|i| cameras.iter().position(|c| c.index == i))
+                        .map_or(0, |i| i as i32 + 1),
+                );
+                d.microphones = audio.microphones;
+                d.speakers = audio.speakers;
+                d.cameras = cameras;
+            });
+        });
+    });
+}
+
+/// Applies what the pickers show. Audio switches at once; a camera that is
+/// on restarts with the new device.
+fn apply_devices(w: &AppWindow) {
+    let pick = |index: i32| usize::try_from(index - 1).ok();
+    let (microphone, speaker, camera_changed) = DEVICES.with(|d| {
+        let mut d = d.borrow_mut();
+        let microphone =
+            pick(w.get_microphone()).and_then(|i| d.microphones.get(i).map(|m| m.id.clone()));
+        let speaker = pick(w.get_speaker()).and_then(|i| d.speakers.get(i).map(|m| m.id.clone()));
+        let camera = pick(w.get_camera()).and_then(|i| d.cameras.get(i).map(|c| c.index));
+        let changed = (
+            (d.microphone != microphone).then(|| microphone.clone()),
+            (d.speaker != speaker).then(|| speaker.clone()),
+            d.camera != camera,
+        );
+        d.microphone = microphone;
+        d.speaker = speaker;
+        d.camera = camera;
+        changed
+    });
+    if microphone.is_some() || speaker.is_some() {
+        std::thread::spawn(move || {
+            if let Some(id) = microphone {
+                backend().engine.choose_microphone(id);
+            }
+            if let Some(id) = speaker {
+                backend().engine.choose_speaker(id);
+            }
+        });
+    }
+    let camera_on = UI.with(|c| c.borrow().as_ref().is_some_and(|s| s.local.camera));
+    if camera_changed && camera_on {
+        let target = DEVICES.with(|d| d.borrow().camera_target());
+        with_room(|r| r.set_camera(target));
+    }
 }
 
 fn ui(f: impl FnOnce(&mut UiState)) {
@@ -181,6 +298,22 @@ impl UiState {
                 tiles.push(self.tile(id, VideoKind::Screen, &p.name, true, true, ""));
             }
         }
+        let screens: HashSet<String> = tiles
+            .iter()
+            .filter(|t| t.kind == "screen" && !t.is_me)
+            .map(|t| t.key.to_string())
+            .collect();
+        if self.focus.is_none() {
+            self.focus = screens.difference(&self.screens_seen).next().cloned();
+        }
+        self.screens_seen = screens;
+        let focus_index = self
+            .focus
+            .as_ref()
+            .and_then(|key| tiles.iter().position(|t| t.key == key.as_str()));
+        if focus_index.is_none() {
+            self.focus = None;
+        }
         self.tiles.set_vec(tiles);
 
         let verifications: Vec<Verification> = self
@@ -197,6 +330,7 @@ impl UiState {
         self.verifications.set_vec(verifications);
 
         if let Some(w) = self.window() {
+            w.set_focus_index(focus_index.map_or(-1, |i| i as i32));
             w.set_mic_on(self.local.mic);
             w.set_camera_on(self.local.camera);
             w.set_screen_on(self.local.screen);
@@ -239,8 +373,19 @@ impl UiState {
                 };
                 self.peers.insert(peer, view);
             }
-            RoomEvent::PeerVerified { peer, name } => {
-                self.system(format!("{name} joined"));
+            RoomEvent::PeerVerified {
+                peer,
+                name,
+                replaces,
+            } => {
+                let returning = replaces.and_then(|old| self.peers.remove(&old));
+                if let Some(old) = replaces {
+                    let prefix = format!("{old}:");
+                    self.frames.retain(|k, _| !k.starts_with(&prefix));
+                }
+                if returning.is_none() {
+                    self.system(format!("{name} joined"));
+                }
                 if let Some(p) = self.peers.get_mut(&peer) {
                     p.name = name;
                     p.status = "Securing connection…";
@@ -272,7 +417,7 @@ impl UiState {
             }
             RoomEvent::PeerConnectionLost { peer } => {
                 if let Some(p) = self.peers.get_mut(&peer) {
-                    p.status = "Connection lost";
+                    p.status = "Reconnecting…";
                 }
             }
             RoomEvent::PeerLeft { peer } => {
@@ -315,7 +460,15 @@ impl UiState {
             }
             RoomEvent::RelayLost => {
                 if let Some(w) = self.window() {
-                    w.set_notice("Relay offline: the call continues, nobody new can join".into());
+                    w.set_notice("Relay offline: the call continues, reconnecting…".into());
+                }
+            }
+            RoomEvent::RelayRestored => {
+                if let Some(w) = self
+                    .window()
+                    .filter(|w| w.get_notice().starts_with("Relay"))
+                {
+                    w.set_notice("".into());
                 }
             }
         }
@@ -352,6 +505,9 @@ fn room_error_text(e: &RoomError) -> String {
             "No room is open with that number. Ask your friend for a fresh code.".into()
         }
         RoomError::RoomFull => "That room already has four people.".into(),
+        RoomError::TooManyJoins => {
+            "Too many attempts to join that room. Wait a minute and try again.".into()
+        }
         RoomError::Signal(e) => format!("Couldn't reach the relay ({e})."),
     }
 }
@@ -402,6 +558,8 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 },
                 peers: BTreeMap::new(),
                 frames: HashMap::new(),
+                focus: None,
+                screens_seen: HashSet::new(),
             };
             w.set_tiles(ModelRc::from(state.tiles.clone()));
             w.set_chat(ModelRc::from(state.chat.clone()));
@@ -429,7 +587,11 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 RoomEvent::RemoteVideo { peer, kind, track } => {
                     start_pump(*peer, *kind, track.clone())
                 }
-                RoomEvent::PeerLeft { peer } => stop_pumps(Some(*peer)),
+                RoomEvent::PeerLeft { peer }
+                | RoomEvent::PeerVerified {
+                    replaces: Some(peer),
+                    ..
+                } => stop_pumps(Some(*peer)),
                 _ => {}
             }
             let _ = slint::invoke_from_event_loop(move || ui(|s| s.apply(event)));
@@ -448,31 +610,14 @@ fn leave_room(error: Option<&str>) {
     let window = UI.with(|cell| cell.borrow_mut().take().and_then(|s| s.window()));
     if let Some(w) = window {
         w.set_screen("home".into());
+        w.window().set_fullscreen(false);
+        w.set_focus_index(-1);
         w.set_picker_open(false);
         w.set_verify_open(false);
         w.set_notice("".into());
         w.set_draft("".into());
         w.set_home_error(error.unwrap_or("").into());
     }
-}
-
-fn describe(v: &silent_engine::stats::VideoStats) -> String {
-    let what = match v.kind {
-        Some(VideoKind::Camera) => "camera",
-        Some(VideoKind::Screen) => "screen",
-        None => "video",
-    };
-    let mut line = format!(
-        "{what} {}x{} @ {:.0} fps, {}",
-        v.width, v.height, v.fps, v.implementation
-    );
-    if v.target_bitrate_bps > 0.0 {
-        line.push_str(&format!(", {:.1} Mbps", v.target_bitrate_bps / 1e6));
-    }
-    if !v.limited_by.is_empty() && v.limited_by != "none" {
-        line.push_str(&format!(", limited by {}", v.limited_by));
-    }
-    line
 }
 
 fn refresh_stats(window: slint::Weak<AppWindow>) {
@@ -498,10 +643,10 @@ fn refresh_stats(window: slint::Weak<AppWindow>) {
                         .unwrap_or_default();
                     lines.push(format!("{name}{rtt}").into());
                     for v in &p.sending {
-                        lines.push(format!("    you send: {}", describe(v)).into());
+                        lines.push(format!("    you send: {}", v.summary()).into());
                     }
                     for v in &p.receiving {
-                        lines.push(format!("    you get: {}", describe(v)).into());
+                        lines.push(format!("    you get: {}", v.summary()).into());
                     }
                 }
             });
@@ -611,13 +756,7 @@ fn main() -> anyhow::Result<()> {
             });
             return;
         }
-        let target = if test_patterns() {
-            Some(CameraTarget::TestPattern)
-        } else {
-            camera::list_cameras()
-                .first()
-                .map(|c| CameraTarget::Device(c.index))
-        };
+        let target = DEVICES.with(|d| d.borrow().camera_target());
         match target {
             Some(target) => {
                 with_room(|r| r.set_camera(Some(target)));
@@ -691,6 +830,30 @@ fn main() -> anyhow::Result<()> {
     });
 
     window.on_leave(|| leave_room(None));
+
+    let weak = window.as_weak();
+    window.on_devices_requested(move || refresh_devices(weak.clone()));
+
+    let weak = window.as_weak();
+    window.on_devices_changed(move || {
+        if let Some(w) = weak.upgrade() {
+            apply_devices(&w);
+        }
+    });
+
+    window.on_tile_clicked(|key| {
+        ui(|s| {
+            s.focus = (s.focus.as_deref() != Some(key.as_str())).then(|| key.to_string());
+            s.rebuild();
+        })
+    });
+
+    window.on_unfocus_tile(|| {
+        ui(|s| {
+            s.focus = None;
+            s.rebuild();
+        })
+    });
 
     let weak = window.as_weak();
     window.on_copy_code(move || {

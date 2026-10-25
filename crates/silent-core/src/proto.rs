@@ -16,11 +16,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::handshake::PeerId;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_PEERS: usize = 4;
 pub const MAX_RELAY_DATA: usize = 64 * 1024;
 pub const MAX_NAME_CHARS: usize = 32;
 pub const MAX_CHAT_CHARS: usize = 4000;
+/// Join attempts a room accepts in a burst. Every attempt is one online
+/// guess at the code, so relays refill this budget slowly: one attempt per
+/// [`JOIN_REFILL_SECS`].
+pub const JOIN_BURST: u32 = 20;
+pub const JOIN_REFILL_SECS: u32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
@@ -94,6 +99,10 @@ pub enum RelayErrorCode {
     TooLarge,
     #[error("too many messages")]
     RateLimited,
+    /// The room has had too many join attempts recently (see
+    /// [`JOIN_BURST`]).
+    #[error("too many attempts to join this room")]
+    TooManyJoins,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +140,13 @@ pub enum Signal {
     Hello {
         version: u32,
         name: String,
+        /// See [`new_session_id`].
+        session: String,
+        /// The sender has a hardware video encoder and would like to send
+        /// H.264. Each side sends with the first codec the other lists, so
+        /// the receiver puts H.264 first for this pair.
+        #[serde(default)]
+        send_h264: bool,
     },
     Offer {
         sdp: String,
@@ -143,7 +159,17 @@ pub enum Signal {
         mline: i32,
         candidate: String,
     },
+    /// Asks the offering side to restart ICE (the answerer can't offer).
+    Restart,
     Bye,
+}
+
+/// A random id a device keeps for the life of one room and sends only inside
+/// the sealed `Hello`. When a device reconnects to the relay it gets a new
+/// peer id, and this is how friends recognise it as the same person.
+pub fn new_session_id() -> String {
+    let bytes: [u8; 16] = rand::random();
+    B64.encode(bytes)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +276,13 @@ mod tests {
         assert!(PeerFrame::decode("x:AAAA").is_err());
         assert!(PeerFrame::decode("nocolon").is_err());
         assert!(PeerFrame::decode("p:!!!").is_err());
+    }
+
+    #[test]
+    fn session_ids_are_random() {
+        let a = new_session_id();
+        assert_eq!(a.len(), 22);
+        assert_ne!(a, new_session_id());
     }
 
     #[test]

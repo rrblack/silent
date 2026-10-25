@@ -4,3 +4,4 @@
 /signal/.dev.vars
 .env
 *.log
+/dist

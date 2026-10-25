@@ -32,6 +32,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -263,6 +264,9 @@ fun RoomScreen(vm: RoomViewModel, camera: CameraFeed, onShareScreen: () -> Unit,
             ControlButton(if (vm.micOn) Icons.Filled.Mic else Icons.Filled.MicOff, !vm.micOn) { vm.toggleMic() }
             ControlButton(if (vm.cameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff, vm.cameraOn) {
                 vm.setCamera(!vm.cameraOn)
+            }
+            if (vm.cameraOn) {
+                ControlButton(Icons.Filled.Cameraswitch, active = false) { vm.flipCamera() }
             }
             ControlButton(if (vm.screenOn) Icons.Filled.StopScreenShare else Icons.Filled.ScreenShare, vm.screenOn) {
                 if (vm.screenOn) onStopScreen() else onShareScreen()

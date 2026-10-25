@@ -216,3 +216,26 @@ async fn oversized_relay_data_is_rejected() {
         }
     );
 }
+
+#[tokio::test]
+async fn join_attempts_are_budgeted() {
+    use silent_core::proto::JOIN_BURST;
+    let base = relay_base().await;
+    let n = unique_nameplate();
+    let mut host = connect(&base, n, Intent::Create).await;
+    recv(&mut host).await;
+    for _ in 0..JOIN_BURST {
+        let mut p = connect(&base, n, Intent::Join).await;
+        assert!(matches!(recv(&mut p).await, ServerMsg::Welcome { .. }));
+        p.close(None).await.unwrap();
+        assert!(matches!(recv(&mut host).await, ServerMsg::Joined { .. }));
+        assert!(matches!(recv(&mut host).await, ServerMsg::Left { .. }));
+    }
+    let mut extra = connect(&base, n, Intent::Join).await;
+    assert_eq!(
+        recv(&mut extra).await,
+        ServerMsg::Error {
+            code: RelayErrorCode::TooManyJoins
+        }
+    );
+}

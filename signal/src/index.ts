@@ -15,12 +15,23 @@ const MAX_RELAY_DATA = 64 * 1024;
 const NAMEPLATE_MAX = 9999;
 const RATE_BURST = 200;
 const RATE_PER_SEC = 50;
+// Every join attempt is one online guess at the code. Same budget as
+// silent-core's JOIN_BURST / JOIN_REFILL_SECS.
+const JOIN_BURST = 20;
+const JOIN_REFILL_SECS = 6;
 const TURN_TTL_SECONDS = 4 * 60 * 60;
 const TURN_CAP_GB_DEFAULT = 900;
 const TURN_WINDOW_DAYS = 31;
 const USAGE_CACHE_MS = 5 * 60 * 1000;
 
-type ErrorCode = "room_full" | "room_taken" | "no_room" | "bad_request" | "too_large" | "rate_limited";
+type ErrorCode =
+  | "room_full"
+  | "room_taken"
+  | "no_room"
+  | "bad_request"
+  | "too_large"
+  | "rate_limited"
+  | "too_many_joins";
 
 interface IceServer {
   urls: string[];
@@ -41,8 +52,16 @@ interface Env {
   TURN_CAP_GB?: string;
 }
 
+interface JoinBudget {
+  tokens: number;
+  at: number;
+}
+
+// Kept on every live socket so the join budget survives hibernation without
+// writing anything to storage.
 interface Attachment {
   id: number;
+  joins?: JoinBudget;
 }
 
 const STUN: IceServer = { urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] };
@@ -161,13 +180,24 @@ export class Room extends DurableObject<Env> {
   private nextId = 0;
   private tokens = new Map<number, { tokens: number; at: number }>();
 
-  private peers(): Array<{ ws: WebSocket; id: number }> {
-    const out: Array<{ ws: WebSocket; id: number }> = [];
+  private peers(): Array<{ ws: WebSocket; id: number; joins?: JoinBudget }> {
+    const out: Array<{ ws: WebSocket; id: number; joins?: JoinBudget }> = [];
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a && ws.readyState === WebSocket.OPEN) out.push({ ws, id: a.id });
+      if (a && ws.readyState === WebSocket.OPEN) out.push({ ws, id: a.id, joins: a.joins });
     }
     return out;
+  }
+
+  // Takes one join attempt from the room's budget, or returns null when it
+  // is used up.
+  private takeJoin(peers: Array<{ joins?: JoinBudget }>): JoinBudget | null {
+    const now = Date.now();
+    const known = peers.map((p) => p.joins).filter((j): j is JoinBudget => !!j);
+    const last = known.sort((a, b) => b.at - a.at)[0] ?? { tokens: JOIN_BURST, at: now };
+    const tokens = Math.min(JOIN_BURST, last.tokens + (now - last.at) / 1000 / JOIN_REFILL_SECS);
+    if (tokens < 1) return null;
+    return { tokens: tokens - 1, at: now };
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -177,6 +207,13 @@ export class Room extends DurableObject<Env> {
 
     if (intent === "create" && peers.length > 0) return rejectSocket("room_taken");
     if (intent === "join" && peers.length === 0) return rejectSocket("no_room");
+    let joins = peers.find((p) => p.joins)?.joins;
+    if (intent === "join") {
+      const budget = this.takeJoin(peers);
+      if (!budget) return rejectSocket("too_many_joins");
+      joins = budget;
+      for (const p of peers) p.ws.serializeAttachment({ id: p.id, joins } satisfies Attachment);
+    }
     if (peers.length >= MAX_PEERS) return rejectSocket("room_full");
 
     // Ids only need to be unique among live peers. After hibernation the
@@ -187,7 +224,7 @@ export class Room extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id: me } satisfies Attachment);
+    server.serializeAttachment({ id: me, joins } satisfies Attachment);
     server.send(JSON.stringify({ t: "welcome", you: me, peers: peers.map((p) => p.id), ice }));
     for (const p of peers) p.ws.send(JSON.stringify({ t: "joined", peer: me }));
 

@@ -17,7 +17,8 @@ use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use silent_core::code::NAMEPLATE_MAX;
 use silent_core::proto::{
-    ClientMsg, IceConfig, Intent, RelayErrorCode, ServerMsg, MAX_PEERS, MAX_RELAY_DATA,
+    ClientMsg, IceConfig, Intent, RelayErrorCode, ServerMsg, JOIN_BURST, JOIN_REFILL_SECS,
+    MAX_PEERS, MAX_RELAY_DATA,
 };
 use silent_core::PeerId;
 use tokio::net::TcpListener;
@@ -34,10 +35,37 @@ pub struct RelayConfig {
     pub ice: IceConfig,
 }
 
-#[derive(Default)]
 struct Room {
     next_id: PeerId,
     peers: BTreeMap<PeerId, mpsc::Sender<ServerMsg>>,
+    /// Join attempts left, refilled over time (see `JOIN_BURST`).
+    joins: f64,
+    joins_at: Instant,
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        Self {
+            next_id: 0,
+            peers: BTreeMap::new(),
+            joins: f64::from(JOIN_BURST),
+            joins_at: Instant::now(),
+        }
+    }
+}
+
+impl Room {
+    fn take_join(&mut self) -> bool {
+        let now = Instant::now();
+        let refill = now.duration_since(self.joins_at).as_secs_f64() / f64::from(JOIN_REFILL_SECS);
+        self.joins = (self.joins + refill).min(f64::from(JOIN_BURST));
+        self.joins_at = now;
+        if self.joins < 1.0 {
+            return false;
+        }
+        self.joins -= 1.0;
+        true
+    }
 }
 
 #[derive(Clone)]
@@ -113,6 +141,9 @@ async fn admit(
         _ => {}
     }
     let room = rooms.entry(nameplate).or_default();
+    if intent == Intent::Join && !room.take_join() {
+        return Err(RelayErrorCode::TooManyJoins);
+    }
     if room.peers.len() >= MAX_PEERS {
         return Err(RelayErrorCode::RoomFull);
     }

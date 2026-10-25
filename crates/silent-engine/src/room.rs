@@ -12,8 +12,18 @@
 //!    ICE candidates follow sealed too,
 //! 4. DTLS comes up using the fingerprints from those authenticated SDPs, so
 //!    media and chat are end to end between the two devices.
+//!
+//! Reconnecting:
+//! - A connection that drops is ICE-restarted by the offering side (the
+//!   answerer asks for it with [`Signal::Restart`]).
+//! - When the relay connection drops, calls keep going peer to peer and the
+//!   room rejoins the relay by itself. Rejoining means a new relay id, so
+//!   every pair starts over; the sealed session id in `Hello` lets friends
+//!   swap the old connection for the new one without a "left" and "joined".
+//! - Ids in [`RoomEvent`]s are local to this room and never reused, unlike
+//!   relay ids (see [`Ids`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -22,8 +32,8 @@ use libwebrtc::peer_connection_factory::PeerConnectionFactory;
 use libwebrtc::prelude::*;
 use libwebrtc::video_track::RtcVideoTrack;
 use silent_core::proto::{
-    clean_name, ChannelMsg, ClientMsg, IceConfig, MediaState, PeerFrame, ServerMsg, Signal,
-    MAX_CHAT_CHARS, PROTOCOL_VERSION,
+    clean_name, new_session_id, ChannelMsg, ClientMsg, IceConfig, Intent, MediaState, PeerFrame,
+    RelayErrorCode, ServerMsg, Signal, MAX_CHAT_CHARS, PROTOCOL_VERSION,
 };
 use silent_core::{
     fingerprint_from_sdp, InviteCode, Opener, PairHandshake, PairKeys, PeerId, Sealer,
@@ -31,13 +41,23 @@ use silent_core::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::media::{
-    apply_encoding, test_pattern, AudioInput, CameraProfile, CameraTarget, LocalMedia, Producer,
-    ScreenProfile, ScreenTarget, VideoInput, VideoKind, STREAM_AUDIO,
+    apply_encoding, hardware_encoder, test_pattern, AudioInput, CameraProfile, CameraTarget,
+    CodecChoice, LocalMedia, Producer, ScreenProfile, ScreenTarget, VideoInput, VideoKind,
+    STREAM_AUDIO,
 };
-use crate::signaling::{SignalLink, Welcome};
+use crate::signaling::{self, SignalError, SignalLink, Welcome};
 use crate::stats::{self, PeerStats};
 
 const START_BITRATE_BPS: u64 = 1_200_000;
+/// A connection that reports "disconnected" often recovers by itself within
+/// a few seconds; only then is ICE restarted.
+const DISCONNECT_GRACE: Duration = Duration::from_secs(3);
+const RESTART_EVERY: Duration = Duration::from_secs(10);
+const MAX_RESTARTS: u32 = 12;
+/// How long a friend who left the relay keeps their direct connection while
+/// it is not working, before they count as gone.
+const ORPHAN_GRACE: Duration = Duration::from_secs(10);
+const RELAY_RETRY_MAX: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -60,16 +80,22 @@ pub enum RoomEvent {
     PeerVerified {
         peer: PeerId,
         name: String,
+        /// Set when this is someone already in the call, back under a new id
+        /// after reconnecting to the relay. The old id is gone; no
+        /// [`RoomEvent::PeerLeft`] is sent for it.
+        replaces: Option<PeerId>,
     },
     /// They typed a different code. Nothing further is exchanged with them.
     PeerWrongCode {
         peer: PeerId,
     },
-    /// Direct encrypted connection is up.
+    /// Direct encrypted connection is up. Sent again after a reconnect.
     PeerConnected {
         peer: PeerId,
         safety_words: [&'static str; 4],
     },
+    /// Media stopped flowing. The room is trying to reconnect; expect
+    /// [`RoomEvent::PeerConnected`] or [`RoomEvent::PeerLeft`] next.
     PeerConnectionLost {
         peer: PeerId,
     },
@@ -94,9 +120,11 @@ pub enum RoomEvent {
         kind: VideoKind,
         message: String,
     },
-    /// The relay connection dropped. Existing calls keep working; nobody new
-    /// can join until the room is recreated.
+    /// The relay connection dropped. Calls keep going peer to peer and the
+    /// room keeps trying to get back on the relay; until then nobody new can
+    /// join.
     RelayLost,
+    RelayRestored,
 }
 
 enum Command {
@@ -104,6 +132,7 @@ enum Command {
     Mic(bool),
     Camera(Option<CameraTarget>),
     Screen(Option<ScreenTarget>),
+    Restart,
     Stats(oneshot::Sender<Vec<PeerStats>>),
     Leave(oneshot::Sender<()>),
 }
@@ -131,9 +160,22 @@ enum Internal {
         peer: PeerId,
         data: Vec<u8>,
     },
+    DcClosed {
+        peer: PeerId,
+    },
     CaptureFailed {
         kind: VideoKind,
         message: String,
+    },
+    /// A scheduled check on a connection that isn't working. Stale when
+    /// `generation` no longer matches the peer's.
+    Recover {
+        peer: PeerId,
+        generation: u64,
+    },
+    RelayBack {
+        welcome: Welcome,
+        link: SignalLink,
     },
 }
 
@@ -183,10 +225,14 @@ impl Room {
 
         let actor = Actor {
             code,
-            me: welcome.me,
+            relay_url: settings.relay_url.clone(),
+            relay_only: settings.relay_only,
+            relay_me: welcome.me,
+            session: new_session_id(),
             name: clean_name(&settings.name),
             factory,
             rtc_config: rtc_config(&welcome.ice, settings.relay_only),
+            codec: CodecChoice::detect(),
             media,
             media_state: MediaState {
                 mic: true,
@@ -194,7 +240,8 @@ impl Room {
                 screen: false,
             },
             peers: HashMap::new(),
-            relay: link.outbound,
+            ids: Ids::new(welcome.me),
+            relay: Some(link.outbound),
             events: ev_tx,
             internal: int_tx,
         };
@@ -206,6 +253,9 @@ impl Room {
         &self.code
     }
 
+    /// Your id in this room. It is the relay id you were given on joining,
+    /// so in a room that never reconnected it matches the id friends see for
+    /// you; friends' ids in events never collide with it.
     pub fn me(&self) -> PeerId {
         self.me
     }
@@ -252,6 +302,13 @@ impl Room {
         let _ = self.commands.send(Command::Screen(target));
     }
 
+    /// Restarts ICE on every connection. Call it when the device switched
+    /// networks (Wi-Fi to mobile data, say) so calls move over right away
+    /// instead of after they time out.
+    pub fn restart_connections(&self) {
+        let _ = self.commands.send(Command::Restart);
+    }
+
     /// Video statistics for every connected friend. The request is sent
     /// immediately; the returned future does not borrow the room.
     pub fn stats(&self) -> impl std::future::Future<Output = Vec<PeerStats>> + Send + 'static {
@@ -294,6 +351,17 @@ fn rtc_config(ice: &IceConfig, relay_only: bool) -> RtcConfiguration {
     config
 }
 
+/// Gets back on the relay under the same room number, recreating the room
+/// there if everyone else dropped off too.
+async fn rejoin(url: &str, nameplate: u16) -> Result<(Welcome, SignalLink), SignalError> {
+    match signaling::connect(url, nameplate, Intent::Join).await {
+        Err(SignalError::Relay(RelayErrorCode::NoRoom)) => {
+            signaling::connect(url, nameplate, Intent::Create).await
+        }
+        other => other,
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -303,6 +371,12 @@ fn now_ms() -> u64 {
 
 #[derive(Default)]
 struct Peer {
+    /// Their current id on the relay; `None` once we can no longer signal
+    /// them (see [`Actor::orphan`]).
+    relay_id: Option<PeerId>,
+    session: Option<String>,
+    /// The codec they asked to send (see `Signal::Hello::send_h264`).
+    send_codec: Option<CodecChoice>,
     handshake: Option<PairHandshake>,
     keys: Option<PairKeys>,
     sealer: Option<Sealer>,
@@ -315,7 +389,51 @@ struct Peer {
     pending_ice: Vec<(String, i32, String)>,
     remote_fingerprint: Option<String>,
     announced_connected: bool,
+    safety_words: Option<[&'static str; 4]>,
+    /// Was connected, and media isn't flowing right now.
+    lost: bool,
+    restarts: u32,
+    recover_generation: u64,
     video_senders: Vec<(VideoKind, RtpSender)>,
+}
+
+/// Maps relay ids to the ids used in events. Relay ids can come back for a
+/// different person (after the relay restarts, or once a Worker room
+/// hibernates), and a friend who rejoins the relay gets a new one, so events
+/// use ids that are unique for the life of the room: the relay id when it
+/// hasn't been seen before, otherwise a spare one.
+struct Ids {
+    by_relay: HashMap<PeerId, PeerId>,
+    used: HashSet<PeerId>,
+    spare: PeerId,
+}
+
+impl Ids {
+    fn new(me: PeerId) -> Self {
+        Self {
+            by_relay: HashMap::new(),
+            used: HashSet::from([me]),
+            spare: 1 << 31,
+        }
+    }
+
+    fn get(&self, relay_id: PeerId) -> Option<PeerId> {
+        self.by_relay.get(&relay_id).copied()
+    }
+
+    fn assign(&mut self, relay_id: PeerId) -> PeerId {
+        let mut id = relay_id;
+        while !self.used.insert(id) {
+            self.spare = self.spare.wrapping_add(1);
+            id = self.spare;
+        }
+        self.by_relay.insert(relay_id, id);
+        id
+    }
+
+    fn forget(&mut self, relay_id: PeerId) -> Option<PeerId> {
+        self.by_relay.remove(&relay_id)
+    }
 }
 
 impl Drop for Actor {
@@ -364,14 +482,21 @@ fn retire(pc: Option<PeerConnection>, dc: Option<DataChannel>) {
 
 struct Actor {
     code: InviteCode,
-    me: PeerId,
+    relay_url: String,
+    relay_only: bool,
+    /// Our id on the relay. Changes when the relay connection is re-made.
+    relay_me: PeerId,
+    session: String,
     name: String,
     factory: PeerConnectionFactory,
     rtc_config: RtcConfiguration,
+    codec: CodecChoice,
     media: LocalMedia,
     media_state: MediaState,
+    /// Keyed by event id (see [`Ids`]).
     peers: HashMap<PeerId, Peer>,
-    relay: mpsc::UnboundedSender<ClientMsg>,
+    ids: Ids,
+    relay: Option<mpsc::UnboundedSender<ClientMsg>>,
     events: mpsc::UnboundedSender<RoomEvent>,
     internal: mpsc::UnboundedSender<Internal>,
 }
@@ -394,7 +519,7 @@ impl Actor {
                     Some(msg) => self.on_relay(msg).await,
                     None => {
                         relay_open = false;
-                        self.emit(RoomEvent::RelayLost);
+                        self.relay_lost();
                     }
                 },
                 cmd = commands.recv() => match cmd {
@@ -418,13 +543,20 @@ impl Actor {
                             let _ = reply.send(all);
                         });
                     }
-                    Some(cmd) => self.on_command(cmd),
+                    Some(cmd) => self.on_command(cmd).await,
                     None => {
                         self.shutdown();
                         return;
                     }
                 },
-                Some(ev) = internal.recv() => self.on_internal(ev).await,
+                Some(ev) = internal.recv() => match ev {
+                    Internal::RelayBack { welcome, link } => {
+                        relay_in = link.inbound;
+                        relay_open = true;
+                        self.relay_restored(welcome, link.outbound);
+                    }
+                    ev => self.on_internal(ev).await,
+                },
             }
         }
     }
@@ -433,49 +565,139 @@ impl Actor {
         let _ = self.events.send(event);
     }
 
-    fn relay_frame(&self, to: PeerId, frame: PeerFrame) {
-        let _ = self.relay.send(ClientMsg::Relay {
-            to,
-            data: frame.encode(),
-        });
+    fn relay_frame(&self, relay_id: PeerId, frame: PeerFrame) {
+        if let Some(relay) = &self.relay {
+            let _ = relay.send(ClientMsg::Relay {
+                to: relay_id,
+                data: frame.encode(),
+            });
+        }
     }
 
     fn send_signal(&mut self, to: PeerId, signal: &Signal) {
-        let Some(sealer) = self.peers.get_mut(&to).and_then(|p| p.sealer.as_mut()) else {
+        let Some(p) = self.peers.get_mut(&to) else {
+            return;
+        };
+        let (Some(relay_id), Some(sealer)) = (p.relay_id, p.sealer.as_mut()) else {
             return;
         };
         let plaintext = serde_json::to_vec(signal).expect("serializable");
         let sealed = sealer.seal(&plaintext);
-        self.relay_frame(to, PeerFrame::Sealed(sealed));
+        self.relay_frame(relay_id, PeerFrame::Sealed(sealed));
     }
 
-    fn begin_pair(&mut self, peer: PeerId) {
-        if peer == self.me || self.peers.contains_key(&peer) {
-            return;
+    /// Whether we send the offers to this friend: the higher relay id does.
+    fn is_offerer(&self, peer: PeerId) -> bool {
+        self.peers
+            .get(&peer)
+            .and_then(|p| p.relay_id)
+            .is_some_and(|r| self.relay_me > r)
+    }
+
+    /// Starts pairing with someone on the relay, or returns the event id of
+    /// the pairing already under way.
+    fn begin_pair(&mut self, relay_id: PeerId) -> Option<PeerId> {
+        if relay_id == self.relay_me {
+            return None;
         }
-        let (handshake, outbound) = PairHandshake::start(&self.code, self.me, peer);
+        if let Some(id) = self.ids.get(relay_id) {
+            return Some(id);
+        }
+        let id = self.ids.assign(relay_id);
+        let (handshake, outbound) = PairHandshake::start(&self.code, self.relay_me, relay_id);
         let mut new_peer = Peer::default();
+        new_peer.relay_id = Some(relay_id);
         new_peer.handshake = Some(handshake);
-        self.peers.insert(peer, new_peer);
-        self.relay_frame(peer, PeerFrame::Pake(outbound));
-        self.emit(RoomEvent::PeerJoining { peer });
+        self.peers.insert(id, new_peer);
+        self.relay_frame(relay_id, PeerFrame::Pake(outbound));
+        self.emit(RoomEvent::PeerJoining { peer: id });
+        Some(id)
     }
 
     async fn on_relay(&mut self, msg: ServerMsg) {
         match msg {
-            ServerMsg::Joined { peer } => self.begin_pair(peer),
-            ServerMsg::Left { peer } => self.drop_peer(peer),
+            ServerMsg::Joined { peer } => {
+                if let Some(stale) = self.ids.forget(peer) {
+                    self.orphan(stale);
+                }
+                self.begin_pair(peer);
+            }
+            ServerMsg::Left { peer } => {
+                if let Some(id) = self.ids.forget(peer) {
+                    self.orphan(id);
+                }
+            }
             ServerMsg::Relay { from, data } => match PeerFrame::decode(&data) {
-                Ok(PeerFrame::Pake(msg)) => self.on_pake(from, &msg),
-                Ok(PeerFrame::Sealed(sealed)) => self.on_sealed(from, &sealed).await,
+                Ok(PeerFrame::Pake(msg)) => {
+                    if let Some(id) = self.begin_pair(from) {
+                        self.on_pake(id, &msg);
+                    }
+                }
+                Ok(PeerFrame::Sealed(sealed)) => {
+                    if let Some(id) = self.ids.get(from) {
+                        self.on_sealed(id, &sealed).await;
+                    }
+                }
                 Err(_) => tracing::debug!(peer = from, "ignoring malformed frame"),
             },
             ServerMsg::Welcome { .. } | ServerMsg::Error { .. } => {}
         }
     }
 
+    /// We can no longer signal this friend: they left the relay, or we lost
+    /// it. A working call keeps going over its direct connection until they
+    /// are back under a new relay id (or it stops working); anything else is
+    /// dropped.
+    fn orphan(&mut self, peer: PeerId) {
+        let Some(p) = self.peers.get_mut(&peer) else {
+            return;
+        };
+        if let Some(relay_id) = p.relay_id.take() {
+            self.ids.forget(relay_id);
+        }
+        if !p.announced_connected || p.lost {
+            self.drop_peer(peer);
+        }
+    }
+
+    fn relay_lost(&mut self) {
+        self.relay = None;
+        self.emit(RoomEvent::RelayLost);
+        let peers: Vec<PeerId> = self.peers.keys().copied().collect();
+        for peer in peers {
+            self.orphan(peer);
+        }
+        let (url, nameplate) = (self.relay_url.clone(), self.code.nameplate());
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            while !internal.is_closed() {
+                tokio::time::sleep(delay).await;
+                match rejoin(&url, nameplate).await {
+                    Ok((welcome, link)) => {
+                        let _ = internal.send(Internal::RelayBack { welcome, link });
+                        return;
+                    }
+                    // Our seat went to someone else; calls go on without the relay.
+                    Err(SignalError::Relay(RelayErrorCode::RoomFull)) => return,
+                    Err(e) => tracing::debug!("relay still unreachable: {e}"),
+                }
+                delay = (delay * 2).min(RELAY_RETRY_MAX);
+            }
+        });
+    }
+
+    fn relay_restored(&mut self, welcome: Welcome, outbound: mpsc::UnboundedSender<ClientMsg>) {
+        self.relay = Some(outbound);
+        self.relay_me = welcome.me;
+        self.rtc_config = rtc_config(&welcome.ice, self.relay_only);
+        self.emit(RoomEvent::RelayRestored);
+        for peer in welcome.peers {
+            self.begin_pair(peer);
+        }
+    }
+
     fn on_pake(&mut self, from: PeerId, msg: &[u8]) {
-        self.begin_pair(from);
         let Some(peer) = self.peers.get_mut(&from) else {
             return;
         };
@@ -502,6 +724,8 @@ impl Actor {
         let hello = Signal::Hello {
             version: PROTOCOL_VERSION,
             name: self.name.clone(),
+            session: self.session.clone(),
+            send_h264: self.codec == CodecChoice::H264,
         };
         self.send_signal(from, &hello);
     }
@@ -547,7 +771,12 @@ impl Actor {
 
     async fn on_signal(&mut self, from: PeerId, signal: Signal) -> anyhow::Result<()> {
         match signal {
-            Signal::Hello { version, name } => {
+            Signal::Hello {
+                version,
+                name,
+                session,
+                send_h264,
+            } => {
                 if version != PROTOCOL_VERSION {
                     anyhow::bail!("peer speaks protocol v{version}");
                 }
@@ -558,19 +787,44 @@ impl Actor {
                     return Ok(());
                 }
                 peer.verified = true;
+                peer.session = Some(session.clone());
+                peer.send_codec = Some(if send_h264 {
+                    CodecChoice::H264
+                } else {
+                    CodecChoice::Default
+                });
+                let replaces = self
+                    .peers
+                    .iter()
+                    .find(|(&id, p)| id != from && p.session.as_deref() == Some(session.as_str()))
+                    .map(|(&id, _)| id);
+                if let Some(old) = replaces {
+                    // Retired by `Peer`'s drop.
+                    if let Some(relay_id) = self.peers.remove(&old).and_then(|p| p.relay_id) {
+                        self.ids.forget(relay_id);
+                    }
+                }
                 self.emit(RoomEvent::PeerVerified {
                     peer: from,
                     name: clean_name(&name),
+                    replaces,
                 });
-                if self.me > from {
-                    self.send_offer(from).await?;
+                if self.is_offerer(from) {
+                    self.send_offer(from, false).await?;
                 }
             }
             Signal::Offer { sdp } => {
                 let pc = self.pc(from)?;
                 let offer = SessionDescription::parse(&sdp, SdpType::Offer)?;
                 pc.set_remote_description(offer).await?;
-                self.add_local_tracks(from, &pc)?;
+                if self
+                    .peers
+                    .get(&from)
+                    .is_some_and(|p| p.video_senders.is_empty())
+                {
+                    self.add_local_tracks(from, &pc)?;
+                }
+                self.prefer_codecs(from, &pc);
                 let answer = pc.create_answer(AnswerOptions::default()).await?;
                 pc.set_local_description(answer.clone()).await?;
                 self.after_remote_description(from, &sdp).await;
@@ -603,6 +857,11 @@ impl Actor {
                     peer.pending_ice.push((mid, mline, candidate));
                 }
             }
+            Signal::Restart => {
+                if self.is_offerer(from) {
+                    self.send_offer(from, true).await?;
+                }
+            }
             Signal::Bye => self.drop_peer(from),
         }
         Ok(())
@@ -615,10 +874,17 @@ impl Actor {
             .ok_or_else(|| anyhow::anyhow!("no connection for peer {peer}"))
     }
 
-    async fn send_offer(&mut self, peer: PeerId) -> anyhow::Result<()> {
+    async fn send_offer(&mut self, peer: PeerId, ice_restart: bool) -> anyhow::Result<()> {
         let pc = self.pc(peer)?;
+        if ice_restart {
+            // Picks up fresh TURN credentials if the relay handed out new ones.
+            if let Err(e) = pc.set_configuration(self.rtc_config.clone()) {
+                tracing::debug!(peer, "could not update ice servers: {e}");
+            }
+        }
+        self.prefer_codecs(peer, &pc);
         let options = OfferOptions {
-            ice_restart: false,
+            ice_restart,
             offer_to_receive_audio: true,
             offer_to_receive_video: true,
         };
@@ -631,6 +897,18 @@ impl Actor {
             },
         );
         Ok(())
+    }
+
+    /// Restarts ICE with one friend, or asks them to when they are the
+    /// offering side.
+    async fn restart(&mut self, peer: PeerId) {
+        if self.is_offerer(peer) {
+            if let Err(e) = self.send_offer(peer, true).await {
+                tracing::debug!(peer, "ice restart failed: {e}");
+            }
+        } else {
+            self.send_signal(peer, &Signal::Restart);
+        }
     }
 
     async fn after_remote_description(&mut self, peer: PeerId, remote_sdp: &str) {
@@ -708,9 +986,11 @@ impl Actor {
         )?;
         let tx = self.internal.clone();
         dc.on_state_change(Some(Box::new(move |state| {
-            if state == DataChannelState::Open {
-                let _ = tx.send(Internal::DcOpen { peer });
-            }
+            let _ = match state {
+                DataChannelState::Open => tx.send(Internal::DcOpen { peer }),
+                DataChannelState::Closed => tx.send(Internal::DcClosed { peer }),
+                _ => Ok(()),
+            };
         })));
         let tx = self.internal.clone();
         dc.on_message(Some(Box::new(move |buf: DataBuffer| {
@@ -720,7 +1000,7 @@ impl Actor {
             });
         })));
 
-        if self.me > peer {
+        if self.is_offerer(peer) {
             self.add_local_transceivers(peer, &pc)?;
         }
 
@@ -772,7 +1052,31 @@ impl Actor {
         Ok(())
     }
 
+    /// Each side sends with the first codec the other side lists, so the
+    /// order we list is the codec this friend asked to send.
+    fn prefer_codecs(&self, peer: PeerId, pc: &PeerConnection) {
+        let choice = self.peers.get(&peer).and_then(|p| p.send_codec);
+        let Some(codecs) = choice.and_then(|c| c.preferences(&self.factory)) else {
+            return;
+        };
+        for transceiver in pc.transceivers() {
+            if matches!(
+                transceiver.receiver().track(),
+                Some(MediaStreamTrack::Video(_))
+            ) {
+                if let Err(e) = transceiver.set_codec_preferences(codecs.clone()) {
+                    tracing::debug!(peer, "could not set codec preferences: {e}");
+                }
+            }
+        }
+    }
+
     fn attach_senders(&mut self, peer: PeerId, senders: Vec<(VideoKind, RtpSender)>) {
+        if hardware_encoder() {
+            for (_, sender) in &senders {
+                sender.set_video_encoder_backend(VideoEncoderBackend::Hardware);
+            }
+        }
         if let Some(p) = self.peers.get_mut(&peer) {
             p.video_senders = senders;
         }
@@ -804,6 +1108,9 @@ impl Actor {
         let Some(p) = self.peers.remove(&peer) else {
             return;
         };
+        if let Some(relay_id) = p.relay_id {
+            self.ids.forget(relay_id);
+        }
         if p.verified {
             self.emit(RoomEvent::PeerLeft { peer });
         }
@@ -839,6 +1146,12 @@ impl Actor {
                 self.send_channel(peer, &ChannelMsg::Media(state));
             }
             Internal::DcMessage { peer, data } => self.on_channel(peer, &data),
+            Internal::DcClosed { peer } => {
+                // An orphan's data channel closing means they hung up.
+                if self.peers.get(&peer).is_some_and(|p| p.relay_id.is_none()) {
+                    self.drop_peer(peer);
+                }
+            }
             Internal::CaptureFailed { kind, message } => {
                 self.media.video(kind).producer = None;
                 match kind {
@@ -849,36 +1162,98 @@ impl Actor {
                 self.broadcast_media();
                 self.emit(RoomEvent::LocalMediaError { kind, message });
             }
+            Internal::Recover { peer, generation } => self.recover(peer, generation).await,
+            Internal::RelayBack { .. } => unreachable!("handled in run loop"),
         }
     }
 
     fn on_pc_state(&mut self, peer: PeerId, state: PeerConnectionState) {
-        tracing::debug!(me = self.me, peer, ?state, "connection state");
+        tracing::debug!(me = self.relay_me, peer, ?state, "connection state");
         let Some(p) = self.peers.get_mut(&peer) else {
             return;
         };
         match state {
-            PeerConnectionState::Connected if !p.announced_connected => {
-                p.announced_connected = true;
-                let local =
-                    p.pc.as_ref()
-                        .and_then(|pc| pc.current_local_description())
-                        .and_then(|d| fingerprint_from_sdp(&d.to_string()));
-                let words = match (&p.keys, local, &p.remote_fingerprint) {
-                    (Some(keys), Some(local), Some(remote)) => keys.safety_words(&local, remote),
-                    _ => ["?", "?", "?", "?"],
-                };
-                self.emit(RoomEvent::PeerConnected {
-                    peer,
-                    safety_words: words,
-                });
+            PeerConnectionState::Connected => {
+                p.restarts = 0;
+                p.recover_generation += 1;
+                if !p.announced_connected {
+                    p.announced_connected = true;
+                    let local =
+                        p.pc.as_ref()
+                            .and_then(|pc| pc.current_local_description())
+                            .and_then(|d| fingerprint_from_sdp(&d.to_string()));
+                    let words = match (&p.keys, local, &p.remote_fingerprint) {
+                        (Some(keys), Some(local), Some(remote)) => {
+                            keys.safety_words(&local, remote)
+                        }
+                        _ => ["?", "?", "?", "?"],
+                    };
+                    p.safety_words = Some(words);
+                } else if !p.lost {
+                    return;
+                }
+                p.lost = false;
+                let safety_words = p.safety_words.unwrap_or(["?"; 4]);
+                self.emit(RoomEvent::PeerConnected { peer, safety_words });
             }
-            PeerConnectionState::Failed => {
-                p.announced_connected = false;
-                self.emit(RoomEvent::PeerConnectionLost { peer });
+            PeerConnectionState::Disconnected | PeerConnectionState::Failed => {
+                if p.announced_connected && !p.lost {
+                    p.lost = true;
+                    self.emit(RoomEvent::PeerConnectionLost { peer });
+                }
+                let p = self.peers.get_mut(&peer).expect("peer exists");
+                let orphan = p.relay_id.is_none();
+                if orphan && state == PeerConnectionState::Failed {
+                    self.drop_peer(peer);
+                    return;
+                }
+                let wait = match (orphan, state) {
+                    (true, _) => ORPHAN_GRACE,
+                    (false, PeerConnectionState::Failed) => Duration::ZERO,
+                    (false, _) => DISCONNECT_GRACE,
+                };
+                self.schedule_recover(peer, wait);
             }
             _ => {}
         }
+    }
+
+    /// Checks on a connection that isn't working after `wait`. Any later
+    /// state change makes the check stale.
+    fn schedule_recover(&mut self, peer: PeerId, wait: Duration) {
+        let Some(p) = self.peers.get_mut(&peer) else {
+            return;
+        };
+        p.recover_generation += 1;
+        let generation = p.recover_generation;
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            let _ = internal.send(Internal::Recover { peer, generation });
+        });
+    }
+
+    async fn recover(&mut self, peer: PeerId, generation: u64) {
+        let Some(p) = self.peers.get_mut(&peer) else {
+            return;
+        };
+        let working =
+            p.pc.as_ref()
+                .is_some_and(|pc| pc.connection_state() == PeerConnectionState::Connected);
+        if p.recover_generation != generation || working {
+            return;
+        }
+        if p.relay_id.is_none() {
+            self.drop_peer(peer);
+            return;
+        }
+        if p.restarts >= MAX_RESTARTS {
+            return;
+        }
+        p.restarts += 1;
+        tracing::debug!(peer, attempt = p.restarts, "restarting ice");
+        self.restart(peer).await;
+        self.schedule_recover(peer, RESTART_EVERY);
     }
 
     fn send_channel(&self, peer: PeerId, msg: &ChannelMsg) {
@@ -924,8 +1299,19 @@ impl Actor {
         }
     }
 
-    fn on_command(&mut self, cmd: Command) {
+    async fn on_command(&mut self, cmd: Command) {
         match cmd {
+            Command::Restart => {
+                let peers: Vec<PeerId> = self
+                    .peers
+                    .iter()
+                    .filter(|(_, p)| p.verified && p.relay_id.is_some())
+                    .map(|(&id, _)| id)
+                    .collect();
+                for peer in peers {
+                    self.restart(peer).await;
+                }
+            }
             Command::Chat(text) => {
                 let text: String = text.chars().take(MAX_CHAT_CHARS).collect();
                 if !text.trim().is_empty() {

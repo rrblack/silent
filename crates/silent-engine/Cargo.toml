@@ -23,6 +23,7 @@ nokhwa = { version = "0.10.11", features = ["input-native"] }
 
 [dev-dependencies]
 silent-relay.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 tracing-subscriber.workspace = true
 
 [build-dependencies]

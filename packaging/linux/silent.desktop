@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Silent
+Comment=Encrypted calls, screen sharing and chat for up to four friends
+Exec=silent
+Icon=silent
+Terminal=false
+Categories=Network;Chat;VideoConference;
+Keywords=call;video;voice;screen;share;encrypted;

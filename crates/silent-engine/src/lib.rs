@@ -17,7 +17,8 @@ use silent_core::InviteCode;
 
 pub use libwebrtc;
 pub use media::{
-    AudioInput, CameraProfile, CameraTarget, ScreenProfile, ScreenTarget, VideoInput, VideoKind,
+    AudioDevice, AudioDevices, AudioInput, CameraProfile, CameraTarget, ScreenProfile,
+    ScreenTarget, VideoInput, VideoKind,
 };
 pub use room::{Room, RoomEvent, Settings};
 pub use signaling::SignalError;
@@ -32,6 +33,8 @@ pub enum RoomError {
     NoSuchRoom,
     #[error("that room already has four people")]
     RoomFull,
+    #[error("too many attempts to join that room, try again in a minute")]
+    TooManyJoins,
     #[error(transparent)]
     Signal(#[from] SignalError),
 }
@@ -56,6 +59,23 @@ impl Engine {
         Self {
             factory: FACTORY.get_or_init(PeerConnectionFactory::default).clone(),
         }
+    }
+
+    /// Microphones and speakers the OS offers.
+    pub fn audio_devices(&self) -> AudioDevices {
+        media::audio_devices(&self.factory)
+    }
+
+    /// Chooses the microphone by [`AudioDevice::id`], or `None` for the system
+    /// default. Applies to the current call and later ones.
+    pub fn choose_microphone(&self, id: Option<String>) {
+        media::choose_microphone(&self.factory, id);
+    }
+
+    /// Chooses the speaker by [`AudioDevice::id`], or `None` for the system
+    /// default. Applies to the current call and later ones.
+    pub fn choose_speaker(&self, id: Option<String>) {
+        media::choose_speaker(&self.factory, id);
     }
 
     /// Opens a new room with a fresh invite code.
@@ -94,6 +114,7 @@ impl Engine {
             )),
             Err(SignalError::Relay(RelayErrorCode::NoRoom)) => Err(RoomError::NoSuchRoom),
             Err(SignalError::Relay(RelayErrorCode::RoomFull)) => Err(RoomError::RoomFull),
+            Err(SignalError::Relay(RelayErrorCode::TooManyJoins)) => Err(RoomError::TooManyJoins),
             Err(e) => Err(e.into()),
         }
     }

@@ -14,7 +14,6 @@ use futures_util::StreamExt;
 use silent_core::InviteCode;
 use silent_engine::libwebrtc::video_stream::native::NativeVideoStream;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
-use silent_engine::stats::VideoStats;
 use silent_engine::{
     AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Room, RoomError, RoomEvent,
     ScreenProfile, ScreenTarget, Settings, VideoInput, VideoKind,
@@ -94,9 +93,12 @@ pub enum RoomUpdate {
     PeerJoining {
         peer: u32,
     },
+    /// `replaces` is set when someone already in the call came back under a
+    /// new id after reconnecting; drop the old id without a "left" message.
     PeerVerified {
         peer: u32,
         name: String,
+        replaces: Option<u32>,
     },
     PeerWrongCode {
         peer: u32,
@@ -127,6 +129,7 @@ pub enum RoomUpdate {
         reason: String,
     },
     RelayLost,
+    RelayRestored,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -137,6 +140,8 @@ pub enum SilentError {
     NoSuchRoom,
     #[error("That room already has four people.")]
     RoomFull,
+    #[error("Too many attempts to join that room. Wait a minute and try again.")]
+    TooManyJoins,
     #[error("Couldn't reach the relay: {reason}")]
     Network { reason: String },
 }
@@ -146,6 +151,7 @@ impl From<RoomError> for SilentError {
         match e {
             RoomError::NoSuchRoom => SilentError::NoSuchRoom,
             RoomError::RoomFull => SilentError::RoomFull,
+            RoomError::TooManyJoins => SilentError::TooManyJoins,
             RoomError::Signal(e) => SilentError::Network {
                 reason: e.to_string(),
             },
@@ -276,6 +282,11 @@ impl SilentRoom {
         self.with_room(|r| r.share_screen(on.then_some(ScreenTarget::External)));
     }
 
+    /// Call when the phone switched networks, so calls move over at once.
+    pub fn restart_connections(&self) {
+        self.with_room(|r| r.restart_connections());
+    }
+
     /// One camera frame in YUV 4:2:0 (Android `YUV_420_888`). See
     /// `VideoInput::push_yuv420` for the meaning of each argument.
     #[allow(clippy::too_many_arguments)]
@@ -324,11 +335,11 @@ impl SilentRoom {
                 lines: p
                     .sending
                     .iter()
-                    .map(|v| format!("you send: {}", describe(v)))
+                    .map(|v| format!("you send: {}", v.summary()))
                     .chain(
                         p.receiving
                             .iter()
-                            .map(|v| format!("you get: {}", describe(v))),
+                            .map(|v| format!("you get: {}", v.summary())),
                     )
                     .collect(),
             })
@@ -389,7 +400,15 @@ async fn pump(
 fn to_update(event: RoomEvent) -> Option<RoomUpdate> {
     Some(match event {
         RoomEvent::PeerJoining { peer } => RoomUpdate::PeerJoining { peer },
-        RoomEvent::PeerVerified { peer, name } => RoomUpdate::PeerVerified { peer, name },
+        RoomEvent::PeerVerified {
+            peer,
+            name,
+            replaces,
+        } => RoomUpdate::PeerVerified {
+            peer,
+            name,
+            replaces,
+        },
         RoomEvent::PeerWrongCode { peer } => RoomUpdate::PeerWrongCode { peer },
         RoomEvent::PeerConnected { peer, safety_words } => RoomUpdate::PeerConnected {
             peer,
@@ -417,25 +436,7 @@ fn to_update(event: RoomEvent) -> Option<RoomUpdate> {
             reason: message,
         },
         RoomEvent::RelayLost => RoomUpdate::RelayLost,
+        RoomEvent::RelayRestored => RoomUpdate::RelayRestored,
         RoomEvent::RemoteVideo { .. } => return None,
     })
-}
-
-fn describe(v: &VideoStats) -> String {
-    let what = match v.kind {
-        Some(VideoKind::Camera) => "camera",
-        Some(VideoKind::Screen) => "screen",
-        None => "video",
-    };
-    let mut line = format!(
-        "{what} {}x{} @ {:.0} fps, {}",
-        v.width, v.height, v.fps, v.implementation
-    );
-    if v.target_bitrate_bps > 0.0 {
-        line.push_str(&format!(", {:.1} Mbps", v.target_bitrate_bps / 1e6));
-    }
-    if !v.limited_by.is_empty() && v.limited_by != "none" {
-        line.push_str(&format!(", limited by {}", v.limited_by));
-    }
-    line
 }

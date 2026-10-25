@@ -17,8 +17,8 @@
     | ==== SPAKE2(code) msg, cleartext ========================================> |
     | <=================================================== SPAKE2(code) msg ==== |
     |        both derive pair keys (only equal if both typed the same code)      |
-    | ==== sealed Hello{name} ===================================================> |
-    | <=================================================== sealed Hello{name} ==== |
+    | ==== sealed Hello{name, session} ==========================================> |
+    | <========================================== sealed Hello{name, session} ==== |
     | <=================================================== sealed Offer{SDP} ==== |
     | ==== sealed Answer{SDP} ===================================================> |
     | <=========================== sealed ICE candidates ==========================> |
@@ -56,7 +56,7 @@ All signaling after SPAKE2 goes through the relay as ChaCha20-Poly1305 envelopes
 - **Associated data:** the protocol label plus the sender and receiver peer ids.
 - **Ordering:** the receiver accepts only the exact next counter. Replayed, reordered or dropped envelopes are rejected.
 
-The signaling carried this way covers display names, SDP (which includes the DTLS certificate fingerprints) and ICE candidates.
+The signaling carried this way covers display names, session ids, codec wishes (whether a device would like to send H.264), SDP (which includes the DTLS certificate fingerprints), ICE candidates, and requests to restart ICE.
 
 **A mistyped code** gives different pair keys, so the first sealed `Hello` fails to open. The peers mark each other as *wrong code* and stop talking to each other. An attacker without the code gets exactly one online guess per handshake, and the relay never sees anything that would allow offline guessing.
 
@@ -66,6 +66,12 @@ WebRTC's DTLS uses the certificate fingerprints from the sealed SDP, so the DTLS
 
 - **Media:** DTLS-SRTP with ephemeral ECDHE keys, which gives forward secrecy.
 - **Chat and media state:** a DTLS data channel.
+
+### Reconnecting
+
+- **A connection that drops** is ICE-restarted by the side that sent the original offer: a new sealed offer with fresh ICE credentials. The other side can ask for one with a sealed `Restart`. DTLS keys and fingerprints don't change, so the safety words stay the same.
+- **When the relay connection drops**, calls keep going over their direct connections, and the app rejoins the same nameplate (recreating the room on the relay if it is empty). The relay hands out a new peer id, so every pair runs SPAKE2 again from scratch and gets new keys and new safety words.
+- **The session id** in `Hello` is 16 random bytes a device picks for each room. It lets friends recognise a device that came back under a new peer id and replace its old connection. It is sealed, so the relay never sees it. Anyone who holds the code could copy someone's session id to take over their place in the friend list, but they could equally just pick that person's name; comparing safety words is still the way to tell devices apart.
 
 ### Safety words
 
@@ -84,7 +90,7 @@ Each pair can compare four words, derived with HKDF from the pair's safety-word 
 ## Known limitations
 
 1. **Room squatting:** anyone can hold a slot by joining a room number with a wrong code. They can't read or send anything, but they count toward the limit of 4. A future version could let verified members ask the relay to evict peers that failed verification with all of them.
-2. **Online guessing:** 24 bits of secret plus one guess per handshake makes a successful guess against a live room negligible: 1 in 16.7 million per attempt, and every failed attempt is announced in the room. Codes are not meant to be reused.
+2. **Online guessing:** 24 bits of secret plus one guess per handshake makes a successful guess against a live room negligible: 1 in 16.7 million per attempt, and every failed attempt is announced in the room. Both relays also budget join attempts per room: 20 at once, then one every 6 seconds (`JOIN_BURST`, `JOIN_REFILL_SECS`), which caps a guesser at about 14,000 attempts a day. The flip side is that someone spamming joins can keep friends who dropped off from rejoining for a while; calls already running are unaffected. Codes are not meant to be reused.
 3. **Endpoints:** a compromised computer, or a friend who screen-records, defeats any protocol. "Nothing is recorded" describes the relay and the app, not the people in the call.
 4. **Supply chain:** builds and auto-updates must be signed. This is not set up yet (see HANDOFF.md).
 5. **Metadata:** the relay and TURN provider (Cloudflare when using the Worker and Cloudflare TURN) see IP addresses and timing. Self-hosting `silent-relay` and coturn removes that third party.

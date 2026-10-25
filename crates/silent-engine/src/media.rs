@@ -4,7 +4,7 @@
 //! which keeps per-friend bitrate adaptation independent).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -222,6 +222,18 @@ impl LocalMedia {
         if audio == AudioInput::Platform && !platform_audio {
             tracing::warn!("no usable audio device; sending silence");
         }
+        if platform_audio {
+            let chosen = CHOSEN_AUDIO
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(id) = &chosen.microphone {
+                factory.set_recording_device_by_guid(id);
+            }
+            if let Some(id) = &chosen.speaker {
+                factory.set_playout_device_by_guid(id);
+            }
+        }
         let (audio, silence) = if platform_audio {
             (factory.create_device_audio_track(STREAM_AUDIO), None)
         } else {
@@ -260,6 +272,110 @@ impl Drop for LocalMedia {
         if self.platform_audio {
             self.factory.release_platform_adm();
         }
+    }
+}
+
+/// A microphone or speaker the OS offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDevice {
+    /// Stable across hot-plugging; pass it back to choose the device.
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioDevices {
+    pub microphones: Vec<AudioDevice>,
+    pub speakers: Vec<AudioDevice>,
+}
+
+#[derive(Clone, Default)]
+struct ChosenAudio {
+    microphone: Option<String>,
+    speaker: Option<String>,
+}
+
+/// The user's device choice, applied whenever the audio device module is
+/// opened. Process-wide, like the module itself; kept in memory only.
+static CHOSEN_AUDIO: Mutex<ChosenAudio> = Mutex::new(ChosenAudio {
+    microphone: None,
+    speaker: None,
+});
+
+pub(crate) fn audio_devices(factory: &PeerConnectionFactory) -> AudioDevices {
+    let opened = !factory.is_platform_adm_active() && factory.acquire_platform_adm();
+    let list = |count: i16, guid: &dyn Fn(u16) -> String, name: &dyn Fn(u16) -> String| {
+        (0..count.max(0) as u16)
+            .map(|i| AudioDevice {
+                id: guid(i),
+                name: name(i),
+            })
+            .filter(|d| !d.id.is_empty())
+            .collect()
+    };
+    let devices = AudioDevices {
+        microphones: list(
+            factory.recording_devices(),
+            &|i| factory.recording_device_guid(i),
+            &|i| factory.recording_device_name(i),
+        ),
+        speakers: list(
+            factory.playout_devices(),
+            &|i| factory.playout_device_guid(i),
+            &|i| factory.playout_device_name(i),
+        ),
+    };
+    if opened {
+        factory.release_platform_adm();
+    }
+    devices
+}
+
+/// Chooses the microphone (`None` for the system default). Takes effect at
+/// once in a running call.
+pub(crate) fn choose_microphone(factory: &PeerConnectionFactory, id: Option<String>) {
+    CHOSEN_AUDIO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .microphone = id.clone();
+    if !factory.is_platform_adm_active() {
+        return;
+    }
+    let recording = factory.recording_is_initialized();
+    if recording {
+        factory.stop_recording();
+    }
+    match &id {
+        Some(id) => factory.set_recording_device_by_guid(id),
+        None => factory.set_recording_device(0),
+    };
+    if recording {
+        factory.init_recording();
+        factory.start_recording();
+    }
+}
+
+/// Chooses the speaker (`None` for the system default). Takes effect at once
+/// in a running call.
+pub(crate) fn choose_speaker(factory: &PeerConnectionFactory, id: Option<String>) {
+    CHOSEN_AUDIO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .speaker = id.clone();
+    if !factory.is_platform_adm_active() {
+        return;
+    }
+    let playing = factory.playout_is_initialized();
+    if playing {
+        factory.stop_playout();
+    }
+    match &id {
+        Some(id) => factory.set_playout_device_by_guid(id),
+        None => factory.set_playout_device(0),
+    };
+    if playing {
+        factory.init_playout();
+        factory.start_playout();
     }
 }
 
@@ -462,9 +578,94 @@ pub(crate) fn test_pattern(source: NativeVideoSource, encoding: Encoding, stop: 
     });
 }
 
+/// Which video codec a device would like to send. It tells friends in its
+/// `Hello`, and they list that codec first, since libwebrtc sends with the
+/// first codec the other side lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodecChoice {
+    /// libwebrtc's own order (VP8 first).
+    Default,
+    /// H.264 first: what GPUs and phones encode in hardware.
+    H264,
+}
+
+impl CodecChoice {
+    /// H.264 when this device has a hardware video encoder. The
+    /// `SILENT_VIDEO_CODEC` environment variable (`h264` or `vp8`) overrides
+    /// the choice, for troubleshooting.
+    pub(crate) fn detect() -> Self {
+        match std::env::var("SILENT_VIDEO_CODEC").as_deref() {
+            Ok("h264") => return CodecChoice::H264,
+            Ok("vp8") => return CodecChoice::Default,
+            _ => {}
+        }
+        if hardware_encoder() {
+            CodecChoice::H264
+        } else {
+            CodecChoice::Default
+        }
+    }
+
+    /// Codec preferences for receiving from a friend who chose `self`, or
+    /// `None` to leave libwebrtc's order alone.
+    pub(crate) fn preferences(
+        self,
+        factory: &PeerConnectionFactory,
+    ) -> Option<Vec<RtpCodecCapability>> {
+        match self {
+            CodecChoice::Default => None,
+            CodecChoice::H264 => {
+                let codecs = factory
+                    .get_rtp_receiver_capabilities(MediaType::Video)
+                    .codecs;
+                let ordered = h264_first(codecs);
+                ordered
+                    .first()
+                    .is_some_and(|c| c.mime_type.eq_ignore_ascii_case("video/H264"))
+                    .then_some(ordered)
+            }
+        }
+    }
+}
+
+pub(crate) fn hardware_encoder() -> bool {
+    VideoEncoderBackend::list_available().into_iter().any(|b| {
+        matches!(
+            b,
+            VideoEncoderBackend::Hardware
+                | VideoEncoderBackend::Nvenc
+                | VideoEncoderBackend::Vaapi
+                | VideoEncoderBackend::VideoToolbox
+        )
+    })
+}
+
+/// Moves H.264 to the front, keeping everything else (VP8, RTX, RED, FEC) in
+/// its original order. Among H.264 variants, packetization mode 1 with the
+/// constrained baseline profile comes first: it is what every hardware
+/// encoder and decoder supports.
+fn h264_first(mut codecs: Vec<RtpCodecCapability>) -> Vec<RtpCodecCapability> {
+    let rank = |c: &RtpCodecCapability| {
+        if !c.mime_type.eq_ignore_ascii_case("video/H264") {
+            return 3;
+        }
+        let fmtp = c.sdp_fmtp_line.as_deref().unwrap_or("");
+        match (
+            fmtp.contains("packetization-mode=1"),
+            fmtp.contains("profile-level-id=42e0"),
+        ) {
+            (true, true) => 0,
+            (true, false) => 1,
+            _ => 2,
+        }
+    };
+    codecs.sort_by_key(rank);
+    codecs
+}
+
 #[cfg(test)]
 mod tests {
-    use super::fit;
+    use super::*;
 
     #[test]
     fn fit_keeps_aspect_and_even_sizes() {
@@ -472,5 +673,49 @@ mod tests {
         assert_eq!(fit(2560, 1600, 1920, 1080), (1728, 1080));
         assert_eq!(fit(1279, 721, 1920, 1080), (1278, 720));
         assert_eq!(fit(5120, 1440, 1920, 1080), (1920, 540));
+    }
+
+    fn codec(mime: &str, fmtp: Option<&str>) -> RtpCodecCapability {
+        RtpCodecCapability {
+            channels: None,
+            clock_rate: Some(90_000),
+            mime_type: mime.into(),
+            sdp_fmtp_line: fmtp.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn h264_moves_to_the_front() {
+        let ordered = h264_first(vec![
+            codec("video/VP8", None),
+            codec("video/rtx", Some("apt=96")),
+            codec(
+                "video/H264",
+                Some("level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f"),
+            ),
+            codec(
+                "video/H264",
+                Some("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f"),
+            ),
+            codec(
+                "video/H264",
+                Some("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"),
+            ),
+            codec("video/AV1", None),
+        ]);
+        let names: Vec<(&str, Option<&str>)> = ordered
+            .iter()
+            .map(|c| (c.mime_type.as_str(), c.sdp_fmtp_line.as_deref()))
+            .collect();
+        assert_eq!(names[0].0, "video/H264");
+        assert!(names[0]
+            .1
+            .unwrap()
+            .contains("packetization-mode=1;profile-level-id=42e01f"));
+        assert!(names[1].1.unwrap().contains("640c1f"));
+        assert!(names[2].1.unwrap().contains("packetization-mode=0"));
+        assert_eq!(names[3].0, "video/VP8");
+        assert_eq!(names[4].0, "video/rtx");
+        assert_eq!(names[5].0, "video/AV1");
     }
 }

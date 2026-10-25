@@ -60,6 +60,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var cameraOn by mutableStateOf(false)
         private set
+    var frontCamera by mutableStateOf(true)
     var screenOn by mutableStateOf(false)
     var notice by mutableStateOf("")
         private set
@@ -126,6 +127,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 screenOn = false
                 friends.clear()
                 chat.clear()
+                ActiveCall.controls = controls
                 if (created) system("Room created. Share the code with up to three friends.")
                 CallService.start(getApplication())
             }.onFailure { error = describe(it) }
@@ -136,6 +138,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         is SilentException.InvalidCode -> e.reason
         is SilentException.NoSuchRoom -> "No room is open with that number. Ask your friend for a fresh code."
         is SilentException.RoomFull -> "That room already has four people."
+        is SilentException.TooManyJoins -> "Too many attempts to join that room. Wait a minute and try again."
         is SilentException.Network -> "Couldn't reach the relay (${e.reason})."
         else -> e.message ?: e.toString()
     }
@@ -146,7 +149,12 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         when (update) {
             is RoomUpdate.PeerJoining -> friends[update.peer] = Friend(update.peer)
             is RoomUpdate.PeerVerified -> {
-                system("${update.name} joined")
+                val returning = update.replaces?.let { old ->
+                    slots.remove(TileKey(old, false))
+                    slots.remove(TileKey(old, true))
+                    friends.remove(old)
+                }
+                if (returning == null) system("${update.name} joined")
                 friends[update.peer]?.let {
                     friends[update.peer] = it.copy(name = update.name, status = "Securing connection…", verified = true)
                 }
@@ -163,7 +171,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 friends[update.peer] = it.copy(status = "", words = update.safetyWords.joinToString(" "))
             }
             is RoomUpdate.PeerConnectionLost -> friends[update.peer]?.let {
-                friends[update.peer] = it.copy(status = "Connection lost")
+                friends[update.peer] = it.copy(status = "Reconnecting…")
             }
             is RoomUpdate.PeerLeft -> {
                 friends.remove(update.peer)?.let { system("${it.name} left") }
@@ -181,13 +189,25 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 if (update.screen) screenOn = false else cameraOn = false
                 system(update.reason)
             }
-            is RoomUpdate.RelayLost -> notice = "Relay offline: the call continues, nobody new can join"
+            is RoomUpdate.RelayLost -> notice = "Relay offline: the call continues, reconnecting…"
+            is RoomUpdate.RelayRestored -> if (notice.startsWith("Relay")) notice = ""
         }
+    }
+
+    private val controls = object : CallControls {
+        override val micOn get() = this@RoomViewModel.micOn
+        override fun toggleMic() = this@RoomViewModel.toggleMic()
+        override fun leave() = this@RoomViewModel.leave()
     }
 
     fun toggleMic() {
         micOn = !micOn
         room?.setMic(micOn)
+        CallService.refresh(getApplication())
+    }
+
+    fun flipCamera() {
+        frontCamera = !frontCamera
     }
 
     fun setCamera(on: Boolean) {
@@ -220,6 +240,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         val r = room ?: return
         room = null
         ActiveCall.room = null
+        ActiveCall.controls = null
         cameraOn = false
         screenOn = false
         ScreenShareService.stop(getApplication())

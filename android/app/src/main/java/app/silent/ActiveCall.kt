@@ -2,8 +2,17 @@ package app.silent
 
 import app.silent.ffi.SilentRoom
 
-/** The room currently open, shared with the capture services. */
+/** The room currently open, shared with the capture and call services. */
 object ActiveCall {
     @Volatile
     var room: SilentRoom? = null
+
+    /** Set by whoever owns the call, so the call notification can act on it. Main thread only. */
+    var controls: CallControls? = null
+}
+
+interface CallControls {
+    val micOn: Boolean
+    fun toggleMic()
+    fun leave()
 }

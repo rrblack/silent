@@ -2,6 +2,8 @@
 //! talking over real WebRTC (host candidates only, no STUN/TURN).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -13,6 +15,7 @@ use silent_engine::{
     ScreenProfile, ScreenTarget, Settings, VideoKind,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::watch;
 
 const STEP: Duration = Duration::from_secs(20);
 
@@ -41,6 +44,56 @@ async fn relay() -> String {
     format!("http://{addr}")
 }
 
+/// A TCP proxy in front of the relay that can cut every connection and
+/// refuse new ones, the way a relay restart or a network blip would.
+struct Proxy {
+    url: String,
+    down: Arc<AtomicBool>,
+    cut: watch::Sender<u32>,
+}
+
+impl Proxy {
+    async fn start(upstream: &str) -> Self {
+        let target = upstream
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let down = Arc::new(AtomicBool::new(false));
+        let (cut, _) = watch::channel(0u32);
+        let (is_down, cuts) = (down.clone(), cut.clone());
+        tokio::spawn(async move {
+            while let Ok((mut client, _)) = listener.accept().await {
+                if is_down.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let target = target.clone();
+                let mut cut = cuts.subscribe();
+                tokio::spawn(async move {
+                    let Ok(mut server) = tokio::net::TcpStream::connect(target).await else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut client, &mut server) => {}
+                        _ = cut.changed() => {}
+                    }
+                });
+            }
+        });
+        Self { url, down, cut }
+    }
+
+    fn cut(&self) {
+        self.down.store(true, Ordering::SeqCst);
+        self.cut.send_modify(|n| *n += 1);
+    }
+
+    fn restore(&self) {
+        self.down.store(false, Ordering::SeqCst);
+    }
+}
+
 fn settings(relay: &str, name: &str) -> Settings {
     Settings {
         relay_url: relay.into(),
@@ -56,6 +109,7 @@ struct Member {
     room: Room,
     events: UnboundedReceiver<RoomEvent>,
     videos: HashMap<(PeerId, VideoKind), RtcVideoTrack>,
+    no_departures: bool,
 }
 
 impl Member {
@@ -65,6 +119,7 @@ impl Member {
             room,
             events,
             videos: HashMap::new(),
+            no_departures: false,
         }
     }
 
@@ -100,7 +155,21 @@ impl Member {
             if let Some(v) = pick(&ev) {
                 return v;
             }
+            if self.no_departures {
+                assert!(
+                    !matches!(ev, RoomEvent::PeerLeft { .. }),
+                    "nobody should leave"
+                );
+            }
         }
+    }
+
+    async fn chat(&mut self) -> (PeerId, String) {
+        self.until(|e| match e {
+            RoomEvent::Chat { from, text, .. } => Some((*from, text.clone())),
+            _ => None,
+        })
+        .await
     }
 
     async fn connected(&mut self, n: usize) -> HashMap<PeerId, [&'static str; 4]> {
@@ -381,4 +450,149 @@ async fn pushed_frames_arrive_upright() {
         Some((480, 640)),
         "receiver should see a portrait image"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn calls_survive_the_relay_dropping() {
+    let _serial = SERIAL.lock().await;
+    let proxy = Proxy::start(&relay().await).await;
+    let engine = Engine::new();
+
+    let mut alice = Member::new(
+        engine
+            .create_room(settings(&proxy.url, "Alice"))
+            .await
+            .unwrap(),
+    );
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&proxy.url, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    let old_bob = *alice.connected(1).await.keys().next().unwrap();
+    let old_alice = *bob.connected(1).await.keys().next().unwrap();
+    alice.no_departures = true;
+    bob.no_departures = true;
+
+    proxy.cut();
+    for m in [&mut alice, &mut bob] {
+        m.until(|e| matches!(e, RoomEvent::RelayLost).then_some(()))
+            .await;
+    }
+    // Without the relay, the direct connection carries on.
+    alice.room.send_chat("still here");
+    assert_eq!(bob.chat().await, (old_alice, "still here".to_string()));
+
+    proxy.restore();
+    for (m, old) in [(&mut alice, old_bob), (&mut bob, old_alice)] {
+        m.until(|e| matches!(e, RoomEvent::RelayRestored).then_some(()))
+            .await;
+        let replaced = m
+            .until(|e| match e {
+                RoomEvent::PeerVerified { replaces, .. } => Some(*replaces),
+                _ => None,
+            })
+            .await;
+        assert_eq!(replaced, Some(old), "the same friend, back under a new id");
+    }
+    let new_bob = *alice.connected(1).await.keys().next().unwrap();
+    let new_alice = *bob.connected(1).await.keys().next().unwrap();
+    assert_ne!(new_bob, old_bob);
+    assert_ne!(new_alice, old_alice);
+
+    bob.room.send_chat("back");
+    assert_eq!(alice.chat().await, (new_bob, "back".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restarting_ice_keeps_the_call() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut alice = Member::new(engine.create_room(settings(&relay, "Alice")).await.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+    alice.no_departures = true;
+    bob.no_departures = true;
+
+    alice.room.share_screen(Some(ScreenTarget::TestPattern));
+    let track = bob.video(alice.room.me(), VideoKind::Screen).await;
+
+    // Both sides: the offerer restarts directly, the answerer asks for it.
+    alice.room.restart_connections();
+    bob.room.restart_connections();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    alice.room.send_chat("after restart");
+    assert_eq!(
+        bob.chat().await,
+        (alice.room.me(), "after restart".to_string())
+    );
+    let mut stream = NativeVideoStream::new(track);
+    let mut frames = 0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while frames < 20 && Instant::now() < deadline {
+        if let Ok(Some(_)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+            frames += 1;
+        }
+    }
+    assert!(
+        frames >= 20,
+        "video stalled after the restart ({frames} frames)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn h264_is_negotiated_when_preferred() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    // What a machine with a hardware encoder picks on its own.
+    std::env::set_var("SILENT_VIDEO_CODEC", "h264");
+    let alice = engine.create_room(settings(&relay, "Alice")).await;
+    std::env::remove_var("SILENT_VIDEO_CODEC");
+    let mut alice = Member::new(alice.unwrap());
+    let code = alice.room.code().clone();
+    let mut bob = Member::new(
+        engine
+            .join_room(settings(&relay, "Bob"), code)
+            .await
+            .unwrap(),
+    );
+    alice.connected(1).await;
+    bob.connected(1).await;
+
+    alice.room.set_camera(Some(CameraTarget::TestPattern));
+    let track = bob.video(alice.room.me(), VideoKind::Camera).await;
+    let mut stream = NativeVideoStream::new(track);
+    let mut frames = 0;
+    let deadline = Instant::now() + STEP;
+    while frames < 30 && Instant::now() < deadline {
+        if let Ok(Some(_)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+            frames += 1;
+        }
+    }
+    assert!(frames >= 30, "only {frames} frames");
+
+    let sent = alice.room.stats().await;
+    let camera = sent[0]
+        .sending
+        .iter()
+        .find(|v| v.kind == Some(VideoKind::Camera))
+        .expect("camera in outbound stats");
+    println!("camera: {}", camera.summary());
+    assert_eq!(camera.codec, "H264");
+    let received = bob.room.stats().await;
+    assert!(received[0].receiving.iter().any(|v| v.codec == "H264"));
 }

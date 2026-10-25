@@ -8,7 +8,10 @@ use silent_core::PeerId;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-const KEEPALIVE: Duration = Duration::from_secs(20);
+const KEEPALIVE: Duration = Duration::from_secs(15);
+/// A socket that has heard nothing (not even a pong) for this long is treated
+/// as dead, so a network change is noticed without waiting for TCP to give up.
+const SILENCE: Duration = Duration::from_secs(45);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +86,7 @@ pub async fn connect(
     tokio::spawn(async move {
         let mut keepalive = tokio::time::interval(KEEPALIVE);
         keepalive.tick().await;
+        let mut heard = tokio::time::Instant::now();
         loop {
             tokio::select! {
                 out = out_rx.recv() => match out {
@@ -96,6 +100,7 @@ pub async fn connect(
                 },
                 incoming = stream.next() => match incoming {
                     Some(Ok(Message::Text(t))) => {
+                        heard = tokio::time::Instant::now();
                         if let Ok(msg) = serde_json::from_str::<ServerMsg>(&t) {
                             if in_tx.send(msg).is_err() {
                                 break;
@@ -103,9 +108,12 @@ pub async fn connect(
                         }
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                    Some(Ok(_)) => {}
+                    Some(Ok(_)) => heard = tokio::time::Instant::now(),
                 },
                 _ = keepalive.tick() => {
+                    if heard.elapsed() > SILENCE {
+                        break;
+                    }
                     if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
                         break;
                     }

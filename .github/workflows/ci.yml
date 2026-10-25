@@ -89,17 +89,16 @@ jobs:
         env:
           # Relay baked into the app; set it under Settings → Secrets and variables → Actions → Variables.
           SILENT_RELAY_URL: ${{ vars.SILENT_RELAY_URL }}
-        run: cargo build --release -p silent-app
+        run: cargo build --release -p silent-app -p silent-relay
+
+      - name: Package (dmg, deb, zip)
+        shell: bash
+        run: packaging/package.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: silent-${{ runner.os }}
-          path: |
-            target/release/silent
-            target/release/silent.exe
-            target/release/silent-relay
-            target/release/silent-relay.exe
-          if-no-files-found: ignore
+          path: dist/*
 
   android:
     name: Android APK

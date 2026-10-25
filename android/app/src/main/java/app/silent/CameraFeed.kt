@@ -16,7 +16,7 @@ import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.Executors
 
 /**
- * Front camera through CameraX. Frames go to the room as YUV 4:2:0 with
+ * Front or back camera through CameraX. Frames go to the room as YUV 4:2:0 with
  * their rotation, and to [preview] for the self view.
  */
 class CameraFeed(private val context: Context) {
@@ -30,7 +30,7 @@ class CameraFeed(private val context: Context) {
     private var u = ByteArray(0)
     private var v = ByteArray(0)
 
-    fun start(owner: LifecycleOwner, high: Boolean) {
+    fun start(owner: LifecycleOwner, high: Boolean, front: Boolean) {
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             val provider = future.get()
@@ -48,11 +48,9 @@ class CameraFeed(private val context: Context) {
                 .build()
                 .also { it.setAnalyzer(executor, ::onFrame) }
             val previewCase = Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }
-            val camera = if (provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
-                CameraSelector.DEFAULT_FRONT_CAMERA
-            } else {
-                CameraSelector.DEFAULT_BACK_CAMERA
-            }
+            val wanted = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+            val other = if (front) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+            val camera = if (provider.hasCamera(wanted)) wanted else other
             try {
                 provider.unbindAll()
                 provider.bindToLifecycle(owner, camera, previewCase, analysis)

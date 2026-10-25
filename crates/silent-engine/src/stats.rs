@@ -15,6 +15,8 @@ pub struct VideoStats {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
+    /// "VP8", "H264", "VP9" or "AV1".
+    pub codec: String,
     /// Encoder or decoder name reported by libwebrtc (e.g. "libvpx",
     /// "OpenH264", "NVENC", "VideoToolbox").
     pub implementation: String,
@@ -23,6 +25,37 @@ pub struct VideoStats {
     /// Outbound only: "none", "cpu", "bandwidth" or "other".
     pub limited_by: String,
     pub power_efficient: bool,
+}
+
+impl VideoStats {
+    /// One line for a stats screen, e.g.
+    /// "screen 1920x1080 @ 60 fps, H264 via NVENC, 7.8 Mbps".
+    pub fn summary(&self) -> String {
+        let what = match self.kind {
+            Some(VideoKind::Camera) => "camera",
+            Some(VideoKind::Screen) => "screen",
+            None => "video",
+        };
+        let mut line = format!(
+            "{what} {}x{} @ {:.0} fps",
+            self.width, self.height, self.fps
+        );
+        match (self.codec.is_empty(), self.implementation.is_empty()) {
+            (false, false) => {
+                line.push_str(&format!(", {} via {}", self.codec, self.implementation))
+            }
+            (false, true) => line.push_str(&format!(", {}", self.codec)),
+            (true, false) => line.push_str(&format!(", {}", self.implementation)),
+            (true, true) => {}
+        }
+        if self.target_bitrate_bps > 0.0 {
+            line.push_str(&format!(", {:.1} Mbps", self.target_bitrate_bps / 1e6));
+        }
+        if !self.limited_by.is_empty() && self.limited_by != "none" {
+            line.push_str(&format!(", limited by {}", self.limited_by));
+        }
+        line
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -51,17 +84,21 @@ pub(crate) async fn collect(peer: PeerId, pc: &PeerConnection) -> PeerStats {
     let Ok(report) = pc.get_stats().await else {
         return out;
     };
+    let mut codec_ids = Vec::new();
+    let mut codecs = HashMap::new();
     for stat in report {
         match stat {
             RtcStats::OutboundRtp(s) if s.stream.kind == "video" => {
                 if s.outbound.frame_width == 0 {
                     continue;
                 }
+                codec_ids.push((true, out.sending.len(), s.stream.codec_id.clone()));
                 out.sending.push(VideoStats {
                     kind: kinds.get(&s.outbound.mid).copied(),
                     width: s.outbound.frame_width,
                     height: s.outbound.frame_height,
                     fps: s.outbound.frames_per_second,
+                    codec: String::new(),
                     implementation: s.outbound.encoder_implementation.clone(),
                     target_bitrate_bps: s.outbound.target_bitrate,
                     limited_by: format!("{:?}", s.outbound.quality_limitation_reason)
@@ -73,11 +110,13 @@ pub(crate) async fn collect(peer: PeerId, pc: &PeerConnection) -> PeerStats {
                 if s.inbound.frame_width == 0 {
                     continue;
                 }
+                codec_ids.push((false, out.receiving.len(), s.stream.codec_id.clone()));
                 out.receiving.push(VideoStats {
                     kind: kinds.get(&s.inbound.mid).copied(),
                     width: s.inbound.frame_width,
                     height: s.inbound.frame_height,
                     fps: s.inbound.frames_per_second,
+                    codec: String::new(),
                     implementation: s.inbound.decoder_implementation.clone(),
                     target_bitrate_bps: 0.0,
                     limited_by: String::new(),
@@ -90,7 +129,21 @@ pub(crate) async fn collect(peer: PeerId, pc: &PeerConnection) -> PeerStats {
                     out.rtt_ms = Some(rtt * 1000.0);
                 }
             }
+            RtcStats::Codec(c) => {
+                let name = c.codec.mime_type.trim_start_matches("video/").to_string();
+                codecs.insert(c.rtc.id, name);
+            }
             _ => {}
+        }
+    }
+    for (sending, i, id) in codec_ids {
+        let list = if sending {
+            &mut out.sending
+        } else {
+            &mut out.receiving
+        };
+        if let Some(name) = codecs.get(&id) {
+            list[i].codec = name.clone();
         }
     }
     out

@@ -78,11 +78,20 @@ component PillButton inherits Rectangle {
 
 component VideoTile inherits Rectangle {
     in property <Tile> tile;
-    border-radius: 12px;
+    in property <bool> small: false;
+    callback clicked;
+    callback double-clicked;
+    border-radius: small ? 8px : 12px;
     clip: true;
     background: Palette.card;
     border-width: 1px;
-    border-color: Palette.border;
+    border-color: touch.has-hover ? Palette.accent-dim : Palette.border;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        double-clicked => { root.double-clicked(); }
+    }
 
     if tile.has-video: Image {
         width: parent.width;
@@ -97,21 +106,21 @@ component VideoTile inherits Rectangle {
         HorizontalLayout {
             alignment: center;
             Rectangle {
-                width: 72px;
-                height: 72px;
-                border-radius: 36px;
+                width: root.small ? 36px : 72px;
+                height: self.width;
+                border-radius: self.width / 2;
                 background: Palette.accent-dim;
                 Text {
                     text: tile.initial;
                     color: Palette.text;
-                    font-size: 28px;
+                    font-size: root.small ? 16px : 28px;
                     font-weight: 700;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
             }
         }
-        if tile.status != "": Text {
+        if tile.status != "" && !root.small: Text {
             text: tile.status;
             color: Palette.subtext;
             font-size: 13px;
@@ -120,18 +129,50 @@ component VideoTile inherits Rectangle {
     }
 
     Rectangle {
-        x: 10px;
-        y: parent.height - self.height - 10px;
-        height: 26px;
-        width: label.preferred-width + 20px;
-        border-radius: 13px;
-        background: #000000b0;
+        x: root.small ? 6px : 10px;
+        y: parent.height - self.height - (root.small ? 6px : 10px);
+        height: root.small ? 20px : 26px;
+        width: min(label.preferred-width + 20px, parent.width - 2 * self.x);
+        border-radius: self.height / 2;
+        background: !tile.mic && tile.kind != "screen" ? #9b111ed0 : #000000b0;
         label := Text {
+            x: 10px;
+            width: parent.width - 20px;
             text: (tile.mic || tile.kind == "screen" ? "" : "muted  ·  ") + tile.name + (tile.kind == "screen" ? "'s screen" : "") + (tile.is-me ? " (you)" : "");
             color: Palette.text;
-            font-size: 12px;
+            font-size: root.small ? 11px : 12px;
             vertical-alignment: center;
+            overflow: elide;
         }
+    }
+}
+
+component DevicePickers inherits VerticalLayout {
+    in property <[string]> microphones;
+    in property <[string]> speakers;
+    in property <[string]> cameras;
+    in-out property <int> microphone;
+    in-out property <int> speaker;
+    in-out property <int> camera;
+    callback changed;
+    spacing: 10px;
+    Text { text: "Microphone"; color: Palette.subtext; font-size: 12px; }
+    ComboBox {
+        model: root.microphones;
+        current-index <=> root.microphone;
+        selected => { root.changed(); }
+    }
+    Text { text: "Speaker"; color: Palette.subtext; font-size: 12px; }
+    ComboBox {
+        model: root.speakers;
+        current-index <=> root.speaker;
+        selected => { root.changed(); }
+    }
+    Text { text: "Camera"; color: Palette.subtext; font-size: 12px; }
+    ComboBox {
+        model: root.cameras;
+        current-index <=> root.camera;
+        selected => { root.changed(); }
     }
 }
 
@@ -144,18 +185,28 @@ component Home inherits Rectangle {
     in-out property <int> screen-quality;
     in-out property <bool> relay-only;
     in-out property <string> relay-url;
+    in property <[string]> microphones;
+    in property <[string]> speakers;
+    in property <[string]> cameras;
+    in-out property <int> microphone;
+    in-out property <int> speaker;
+    in-out property <int> camera;
     property <bool> show-settings: false;
     callback create-room;
     callback join-room;
+    callback devices-requested;
+    callback devices-changed;
 
     background: Palette.bg;
 
-    VerticalLayout {
-        alignment: center;
-        HorizontalLayout {
-            alignment: center;
-            VerticalLayout {
+    scroll := ScrollView {
+        content-width: scroll.visible-width;
+        content-height: max(scroll.visible-height, form.preferred-height + 80px);
+            form := VerticalLayout {
+                x: (scroll.visible-width - self.width) / 2;
+                y: max(40px, (scroll.visible-height - self.preferred-height) / 2);
                 width: 420px;
+                height: self.preferred-height;
                 spacing: 16px;
 
                 Text {
@@ -224,7 +275,12 @@ component Home inherits Rectangle {
                     horizontal-alignment: center;
                     TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { root.show-settings = !root.show-settings; }
+                        clicked => {
+                            root.show-settings = !root.show-settings;
+                            if (root.show-settings) {
+                                root.devices-requested();
+                            }
+                        }
                     }
                 }
 
@@ -246,9 +302,17 @@ component Home inherits Rectangle {
                     }
                     Text { text: "Relay server"; color: Palette.subtext; font-size: 12px; }
                     LineEdit { text <=> root.relay-url; }
+                    DevicePickers {
+                        microphones: root.microphones;
+                        speakers: root.speakers;
+                        cameras: root.cameras;
+                        microphone <=> root.microphone;
+                        speaker <=> root.speaker;
+                        camera <=> root.camera;
+                        changed => { root.devices-changed(); }
+                    }
                 }
             }
-        }
     }
 }
 
@@ -262,7 +326,12 @@ component Room inherits Rectangle {
     in property <bool> screen-on;
     in property <bool> copied;
     in property <string> notice;
+    /// Index of the spotlighted tile, or -1 for the grid.
+    in property <int> focus-index: -1;
+    in property <bool> immersive: false;
     in-out property <string> draft;
+    callback tile-clicked(string);
+    callback toggle-fullscreen;
     callback toggle-mic;
     callback toggle-camera;
     callback toggle-screen;
@@ -271,6 +340,7 @@ component Room inherits Rectangle {
     callback send-chat;
     callback show-verify;
     callback show-stats;
+    callback show-devices;
 
     background: Palette.bg;
 
@@ -280,7 +350,7 @@ component Room inherits Rectangle {
     property <length> gap: 12px;
 
     VerticalLayout {
-        HorizontalLayout {
+        if !root.immersive: HorizontalLayout {
             height: 56px;
             padding-left: 16px;
             padding-right: 16px;
@@ -321,6 +391,11 @@ component Room inherits Rectangle {
             }
             PillButton {
                 y: 8px;
+                label: "Devices";
+                clicked => { root.show-devices(); }
+            }
+            PillButton {
+                y: 8px;
                 label: "Stats";
                 enabled: root.verifications.length > 0;
                 clicked => { root.show-stats(); }
@@ -345,16 +420,34 @@ component Room inherits Rectangle {
                 property <length> tile-h: self.tile-w * 9 / 16;
                 property <length> x0: (self.width - root.cols * self.tile-w - (root.cols - 1) * root.gap) / 2;
                 property <length> y0: (self.height - root.rows * self.tile-h - (root.rows - 1) * root.gap) / 2;
+                // Spotlight: one big tile, the others in a strip below it.
+                property <bool> spotlight: root.focus-index >= 0 && root.focus-index < root.count;
+                property <int> others: root.count - 1;
+                property <length> thumb-h: self.others > 0 ? min(110px, self.height / 5) : 0px;
+                property <length> thumb-w: min(self.thumb-h * 16 / 9, (self.width - max(self.others - 1, 0) * root.gap) / max(self.others, 1));
+                property <length> strip-x0: (self.width - self.others * self.thumb-w - max(self.others - 1, 0) * root.gap) / 2;
+                property <length> big-area-h: self.height - (self.others > 0 ? self.thumb-h + root.gap : 0px);
+                property <length> big-w: min(self.width, self.big-area-h * 16 / 9);
+                property <length> big-h: self.big-w * 9 / 16;
                 for t[i] in root.tiles: VideoTile {
+                    property <bool> big: stage.spotlight && i == root.focus-index;
+                    property <int> slot: i < root.focus-index ? i : i - 1;
                     tile: t;
-                    x: stage.x0 + Math.mod(i, root.cols) * (stage.tile-w + root.gap);
-                    y: stage.y0 + Math.floor(i / root.cols) * (stage.tile-h + root.gap);
-                    width: stage.tile-w;
-                    height: stage.tile-h;
+                    small: stage.spotlight && !self.big;
+                    x: !stage.spotlight ? stage.x0 + Math.mod(i, root.cols) * (stage.tile-w + root.gap)
+                        : self.big ? (stage.width - stage.big-w) / 2
+                        : stage.strip-x0 + self.slot * (stage.thumb-w + root.gap);
+                    y: !stage.spotlight ? stage.y0 + Math.floor(i / root.cols) * (stage.tile-h + root.gap)
+                        : self.big ? (stage.big-area-h - stage.big-h) / 2
+                        : stage.height - stage.thumb-h;
+                    width: !stage.spotlight ? stage.tile-w : self.big ? stage.big-w : stage.thumb-w;
+                    height: !stage.spotlight ? stage.tile-h : self.big ? stage.big-h : stage.thumb-h;
+                    clicked => { root.tile-clicked(t.key); }
+                    double-clicked => { root.toggle-fullscreen(); }
                 }
             }
 
-            Rectangle {
+            if !root.immersive: Rectangle {
                 width: 300px;
                 border-radius: 12px;
                 background: Palette.panel;
@@ -405,7 +498,16 @@ component Room inherits Rectangle {
             PillButton { label: root.mic-on ? "Mute" : "Unmute"; active: !root.mic-on; clicked => { root.toggle-mic(); } }
             PillButton { label: root.camera-on ? "Stop camera" : "Camera"; active: root.camera-on; clicked => { root.toggle-camera(); } }
             PillButton { label: root.screen-on ? "Stop sharing" : "Share screen"; active: root.screen-on; clicked => { root.toggle-screen(); } }
+            PillButton { label: root.immersive ? "Exit full screen" : "Full screen"; clicked => { root.toggle-fullscreen(); } }
             PillButton { label: "Leave"; danger: true; clicked => { root.leave(); } }
+        }
+        if !root.immersive: Text {
+            height: 20px;
+            text: "Click a tile to spotlight it  ·  Ctrl+D mute  ·  Ctrl+E camera  ·  F11 full screen";
+            color: Palette.subtext;
+            font-size: 11px;
+            horizontal-alignment: center;
+            vertical-alignment: top;
         }
     }
 }
@@ -436,6 +538,7 @@ component Sheet inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "Silent";
+    icon: @image-url("../../../packaging/silent.png");
     preferred-width: 1280px;
     preferred-height: 800px;
     min-width: 900px;
@@ -463,6 +566,7 @@ export component AppWindow inherits Window {
     in property <bool> screen-on;
     in property <bool> copied;
     in property <string> notice;
+    in property <int> focus-index: -1;
     in-out property <string> draft;
 
     in property <[SourceItem]> sources;
@@ -470,6 +574,13 @@ export component AppWindow inherits Window {
     in-out property <bool> verify-open: false;
     in-out property <bool> stats-open: false;
     in property <[string]> stats-lines;
+    in-out property <bool> devices-open: false;
+    in property <[string]> microphones: ["System default"];
+    in property <[string]> speakers: ["System default"];
+    in property <[string]> cameras: ["First camera"];
+    in-out property <int> microphone: 0;
+    in-out property <int> speaker: 0;
+    in-out property <int> camera: 0;
 
     callback create-room;
     callback join-room;
@@ -481,6 +592,10 @@ export component AppWindow inherits Window {
     callback copy-code;
     callback send-chat;
     callback stats-opened;
+    callback tile-clicked(string);
+    callback unfocus-tile;
+    callback devices-requested;
+    callback devices-changed;
 
     if root.screen == "home": Home {
         name <=> root.name;
@@ -491,11 +606,46 @@ export component AppWindow inherits Window {
         screen-quality <=> root.screen-quality;
         relay-only <=> root.relay-only;
         relay-url <=> root.relay-url;
+        microphones: root.microphones;
+        speakers: root.speakers;
+        cameras: root.cameras;
+        microphone <=> root.microphone;
+        speaker <=> root.speaker;
+        camera <=> root.camera;
         create-room => { root.create-room(); }
         join-room => { root.join-room(); }
+        devices-requested => { root.devices-requested(); }
+        devices-changed => { root.devices-changed(); }
     }
 
-    if root.screen == "room": Room {
+    if root.screen == "room": keys := FocusScope {
+      init => { self.focus(); }
+      capture-key-pressed(event) => {
+        if (event.modifiers.control && (event.text == "d" || event.text == "D")) {
+            root.toggle-mic();
+            return accept;
+        }
+        if (event.modifiers.control && (event.text == "e" || event.text == "E")) {
+            root.toggle-camera();
+            return accept;
+        }
+        if (event.text == Key.F11) {
+            root.full-screen = !root.full-screen;
+            return accept;
+        }
+        if (event.text == Key.Escape && !root.picker-open && !root.verify-open && !root.stats-open && !root.devices-open) {
+            if (root.full-screen) {
+                root.full-screen = false;
+                return accept;
+            }
+            if (root.focus-index >= 0) {
+                root.unfocus-tile();
+                return accept;
+            }
+        }
+        reject
+      }
+      Room {
         code: root.code;
         tiles: root.tiles;
         chat: root.chat;
@@ -513,10 +663,19 @@ export component AppWindow inherits Window {
         copy-code => { root.copy-code(); }
         send-chat => { root.send-chat(); }
         show-verify => { root.verify-open = true; }
+        show-devices => {
+            root.devices-open = true;
+            root.devices-requested();
+        }
         show-stats => {
             root.stats-open = true;
             root.stats-opened();
         }
+        focus-index: root.focus-index;
+        immersive: root.full-screen;
+        tile-clicked(key) => { root.tile-clicked(key); }
+        toggle-fullscreen => { root.full-screen = !root.full-screen; }
+      }
     }
 
     if root.picker-open: Sheet {
@@ -563,6 +722,22 @@ export component AppWindow inherits Window {
             Text { text: v.words; color: Palette.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
         }
         PillButton { label: "Done"; clicked => { root.verify-open = false; } }
+    }
+
+    if root.devices-open: Sheet {
+        title: "Devices";
+        subtitle: "Switching takes effect right away.";
+        close => { root.devices-open = false; }
+        DevicePickers {
+            microphones: root.microphones;
+            speakers: root.speakers;
+            cameras: root.cameras;
+            microphone <=> root.microphone;
+            speaker <=> root.speaker;
+            camera <=> root.camera;
+            changed => { root.devices-changed(); }
+        }
+        PillButton { label: "Done"; clicked => { root.devices-open = false; } }
     }
 
     if root.stats-open: Sheet {

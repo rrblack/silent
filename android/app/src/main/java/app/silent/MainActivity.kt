@@ -6,7 +6,9 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,13 +40,22 @@ class MainActivity : ComponentActivity() {
         setContent {
             SilentTheme {
                 val inRoom = vm.room != null
-                LaunchedEffect(vm.cameraOn, inRoom) {
+                LaunchedEffect(vm.cameraOn, vm.frontCamera, inRoom) {
                     if (vm.cameraOn && inRoom && granted(Manifest.permission.CAMERA)) {
-                        camera.start(this@MainActivity, vm.cameraHigh)
+                        camera.start(this@MainActivity, vm.cameraHigh, vm.frontCamera)
                     } else {
                         camera.stop()
                     }
                 }
+                LaunchedEffect(inRoom) {
+                    if (inRoom) {
+                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
+                // Back leaves the app, not the call: the call keeps running in the background.
+                BackHandler(enabled = inRoom) { moveTaskToBack(true) }
                 DisposableEffect(Unit) { onDispose { camera.stop() } }
                 if (inRoom) {
                     RoomScreen(
