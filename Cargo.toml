@@ -8,6 +8,7 @@ members = [
     "crates/silent-ffi",
     "crates/uniffi-bindgen",
 ]
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -42,3 +43,8 @@ strip = true
 [profile.mobile]
 inherits = "release"
 strip = "debuginfo"
+
+# webrtc-sys 0.3.49 with its log sink at warnings instead of verbose (see
+# third_party/README.md).
+[patch.crates-io]
+webrtc-sys = { path = "third_party/webrtc-sys" }
