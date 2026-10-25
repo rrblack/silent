@@ -19,4 +19,7 @@ interface CallControls {
     val micOn: Boolean
     fun toggleMic()
     fun leave()
+
+    /** Screen sharing ended, whatever ended it (the system, an error, the user). */
+    fun screenStopped()
 }

@@ -108,6 +108,7 @@ class ScreenShareService : Service() {
         projection?.stop()
         thread?.quitSafely()
         ActiveCall.room?.setScreen(false)
+        Handler(mainLooper).post { ActiveCall.controls?.screenStopped() }
         super.onDestroy()
     }
 

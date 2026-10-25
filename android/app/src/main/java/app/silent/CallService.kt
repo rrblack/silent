@@ -1,11 +1,13 @@
 package app.silent
 
+import android.Manifest
 import android.app.Notification
 import android.app.PendingIntent
 import android.graphics.drawable.Icon
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -13,6 +15,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import kotlin.concurrent.thread
 
 /**
@@ -33,10 +36,18 @@ class CallService : Service() {
                 return START_NOT_STICKY
             }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(ID, notification())
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(ID, notification())
+            }
+        } catch (e: RuntimeException) {
+            // No microphone permission, or Android won't let us start from the
+            // background: the call still works while the app is open.
+            Log.w("silent", "call can't keep running in the background", e)
+            stopSelf()
+            return START_NOT_STICKY
         }
         if (intent?.action == null || intent.action == ACTION_ROUTE) routeAudio(true)
         watchNetwork()
@@ -128,8 +139,13 @@ class CallService : Service() {
         private const val ACTION_REFRESH = "app.silent.REFRESH"
         private const val ACTION_ROUTE = "app.silent.ROUTE"
 
-        fun start(context: Context) =
-            context.startForegroundService(Intent(context, CallService::class.java))
+        /** Keeps the call alive in the background. Needs the microphone permission. */
+        fun start(context: Context) {
+            val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            if (!granted) return
+            runCatching { context.startForegroundService(Intent(context, CallService::class.java)) }
+                .onFailure { Log.w("silent", "call can't keep running in the background", it) }
+        }
 
         /** Moves call audio to the loudspeaker or the earpiece. */
         fun setSpeaker(context: Context, on: Boolean) {

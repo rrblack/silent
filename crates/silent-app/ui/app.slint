@@ -748,6 +748,13 @@ export component AppWindow inherits Window {
         }
         reject
       }
+      // No key-released comes once the window loses focus; don't leave the
+      // microphone open.
+      focus-lost(reason) => {
+        if (root.push-to-talk) {
+            root.push-to-talk-held(false);
+        }
+      }
       Room {
         code: root.code;
         tiles: root.tiles;

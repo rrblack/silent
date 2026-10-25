@@ -7,6 +7,7 @@
 //! Calls that talk to the network block; call them off the main thread.
 //! Listener callbacks arrive on background threads.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -232,6 +233,8 @@ pub fn join_room(
     Ok(SilentRoom::start(room, listener))
 }
 
+type Pumps = Arc<Mutex<HashMap<(PeerId, VideoKind), JoinHandle<()>>>>;
+
 #[derive(uniffi::Object)]
 pub struct SilentRoom {
     room: Mutex<Option<Room>>,
@@ -240,12 +243,15 @@ pub struct SilentRoom {
     camera: VideoInput,
     screen: VideoInput,
     tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    /// One video pump per friend and kind; stopped when they leave.
+    pumps: Pumps,
 }
 
 impl SilentRoom {
     fn start(mut room: Room, listener: Arc<dyn RoomListener>) -> Arc<Self> {
         let mut events = room.take_events();
         let tasks: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::default();
+        let pumps: Pumps = Arc::default();
         let this = Arc::new(SilentRoom {
             code: room.code().to_string(),
             me: room.me(),
@@ -253,15 +259,35 @@ impl SilentRoom {
             screen: room.video_input(VideoKind::Screen),
             room: Mutex::new(Some(room)),
             tasks: tasks.clone(),
+            pumps: pumps.clone(),
         });
 
-        let pumps = tasks.clone();
         let handle = runtime().spawn(async move {
             while let Some(event) = events.recv().await {
-                if let RoomEvent::RemoteVideo { peer, kind, track } = &event {
-                    let pump = runtime().spawn(pump(*peer, *kind, track.clone(), listener.clone()));
-                    pumps.lock().unwrap().push(pump);
-                    continue;
+                let gone = match &event {
+                    RoomEvent::RemoteVideo { peer, kind, track } => {
+                        let pump =
+                            runtime().spawn(pump(*peer, *kind, track.clone(), listener.clone()));
+                        if let Some(old) = pumps.lock().unwrap().insert((*peer, *kind), pump) {
+                            old.abort();
+                        }
+                        continue;
+                    }
+                    RoomEvent::PeerLeft { peer }
+                    | RoomEvent::PeerVerified {
+                        replaces: Some(peer),
+                        ..
+                    } => Some(*peer),
+                    _ => None,
+                };
+                if let Some(gone) = gone {
+                    pumps.lock().unwrap().retain(|(peer, _), pump| {
+                        let keep = *peer != gone;
+                        if !keep {
+                            pump.abort();
+                        }
+                        keep
+                    });
                 }
                 if let Some(update) = to_update(event) {
                     listener.on_update(update);
@@ -417,9 +443,7 @@ impl SilentRoom {
 
     pub fn leave(&self) {
         let room = self.room.lock().unwrap().take();
-        for task in self.tasks.lock().unwrap().drain(..) {
-            task.abort();
-        }
+        self.stop_tasks();
         if let Some(room) = room {
             runtime().block_on(async {
                 let _ = tokio::time::timeout(Duration::from_secs(2), room.leave()).await;
@@ -428,11 +452,20 @@ impl SilentRoom {
     }
 }
 
-impl Drop for SilentRoom {
-    fn drop(&mut self) {
+impl SilentRoom {
+    fn stop_tasks(&self) {
         for task in self.tasks.lock().unwrap().drain(..) {
             task.abort();
         }
+        for (_, pump) in self.pumps.lock().unwrap().drain() {
+            pump.abort();
+        }
+    }
+}
+
+impl Drop for SilentRoom {
+    fn drop(&mut self) {
+        self.stop_tasks();
     }
 }
 

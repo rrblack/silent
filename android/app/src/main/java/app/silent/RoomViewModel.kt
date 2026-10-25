@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.thread
 
 data class Friend(
     val id: UInt,
@@ -107,17 +108,27 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     private var sentFiles = 0
     fun slot(key: TileKey): FrameSlot = slots.getOrPut(key) { FrameSlot() }
 
-    private val listener = object : RoomListener {
+    /**
+     * One per room. Once the room is left, late callbacks from it are
+     * dropped so they can't leak into the next room's state.
+     */
+    private inner class Listener : RoomListener {
+        @Volatile
+        var active = true
+
         override fun onUpdate(update: RoomUpdate) {
-            main.post { apply(update) }
+            if (active) main.post { if (active) apply(update) }
         }
 
         override fun onVideoFrame(peer: UInt, screen: Boolean, width: UInt, height: UInt, rgba: ByteArray) {
+            if (!active) return
             val slot = slot(TileKey(peer, screen))
             val image = synchronized(slot) { slot.fill(width.toInt(), height.toInt(), rgba) }
-            main.post { slot.image.value = image }
+            main.post { if (active) slot.image.value = image }
         }
     }
+
+    private var listener: Listener? = null
 
     private fun settings() = RoomSettings(
         relayUrl = relayUrl.trim(),
@@ -139,12 +150,14 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun open(code: String?) {
+        if (busy || room != null) return
         if (relayUrl.isBlank()) {
             error = "Set a relay server under Settings first."
             return
         }
         busy = true
         error = ""
+        val listener = Listener()
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
@@ -153,6 +166,10 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
             }
             busy = false
             result.onSuccess { r ->
+                this@RoomViewModel.listener = listener
+                slots.clear()
+                notice = ""
+                stats = emptyList()
                 created = code == null
                 room = r
                 ActiveCall.room = r
@@ -260,6 +277,9 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         override val micOn get() = this@RoomViewModel.micOn
         override fun toggleMic() = this@RoomViewModel.toggleMic()
         override fun leave() = this@RoomViewModel.leave()
+        override fun screenStopped() {
+            screenOn = false
+        }
     }
 
     fun toggleMic() {
@@ -369,10 +389,14 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         screenOn = false
         ScreenShareService.stop(getApplication())
         CallService.stop(getApplication())
+        listener?.active = false
+        listener = null
         slots.clear()
         files.clear()
         error = reason
-        viewModelScope.launch(Dispatchers.IO) { r.leave() }
+        // Not viewModelScope: when the ViewModel is cleared, that scope is
+        // cancelled before onCleared runs, and the room would never be left.
+        thread(name = "silent-leave") { r.leave() }
     }
 
     override fun onCleared() {

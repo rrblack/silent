@@ -6,6 +6,7 @@ mod video;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -31,7 +32,14 @@ struct Backend {
     rt: tokio::runtime::Runtime,
     engine: Engine,
     room: Mutex<Option<Room>>,
+    /// Bumped whenever a room is opened or left, so a room's late events
+    /// and file dialogs can tell they are no longer current.
+    generation: AtomicU64,
     pumps: Mutex<HashMap<String, JoinHandle<()>>>,
+}
+
+fn generation() -> u64 {
+    backend().generation.load(Ordering::SeqCst)
 }
 
 static BACKEND: OnceLock<Backend> = OnceLock::new();
@@ -651,6 +659,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
         start_pump(me, VideoKind::Camera, room.local_video(VideoKind::Camera));
         start_pump(me, VideoKind::Screen, room.local_video(VideoKind::Screen));
         *backend().room.lock().unwrap() = Some(room);
+        let mine = backend().generation.fetch_add(1, Ordering::SeqCst) + 1;
 
         let win = window.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -703,6 +712,9 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
         });
 
         while let Some(event) = events.recv().await {
+            if generation() != mine {
+                break;
+            }
             match &event {
                 RoomEvent::RemoteVideo { peer, kind, track } => {
                     start_pump(*peer, *kind, track.clone())
@@ -714,7 +726,11 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 } => stop_pumps(Some(*peer)),
                 _ => {}
             }
-            let _ = slint::invoke_from_event_loop(move || ui(|s| s.apply(event)));
+            let _ = slint::invoke_from_event_loop(move || {
+                if generation() == mine {
+                    ui(|s| s.apply(event))
+                }
+            });
         }
     });
 }
@@ -722,6 +738,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
 /// Leaves the current room and returns to the home screen, optionally with
 /// an error message. Call from the UI thread.
 fn leave_room(error: Option<&str>) {
+    backend().generation.fetch_add(1, Ordering::SeqCst);
     let room = backend().room.lock().unwrap().take();
     stop_pumps(None);
     if let Some(room) = room {
@@ -734,6 +751,8 @@ fn leave_room(error: Option<&str>) {
         w.set_focus_index(-1);
         w.set_picker_open(false);
         w.set_verify_open(false);
+        w.set_devices_open(false);
+        w.set_stats_open(false);
         w.set_notice("".into());
         w.set_draft("".into());
         w.set_home_error(error.unwrap_or("").into());
@@ -817,6 +836,7 @@ fn main() -> anyhow::Result<()> {
         rt,
         engine,
         room: Mutex::new(None),
+        generation: AtomicU64::new(0),
         pumps: Mutex::new(HashMap::new()),
     };
     if BACKEND.set(state).is_err() {
@@ -836,6 +856,9 @@ fn main() -> anyhow::Result<()> {
     let weak = window.as_weak();
     window.on_create_room(move || {
         let Some(w) = weak.upgrade() else { return };
+        if w.get_busy() || backend().room.lock().unwrap().is_some() {
+            return;
+        }
         w.set_busy(true);
         w.set_home_error("".into());
         open_room(weak.clone(), settings_from(&w), None);
@@ -844,6 +867,9 @@ fn main() -> anyhow::Result<()> {
     let weak = window.as_weak();
     window.on_join_room(move || {
         let Some(w) = weak.upgrade() else { return };
+        if w.get_busy() || backend().room.lock().unwrap().is_some() {
+            return;
+        }
         match w.get_join_code().parse::<InviteCode>() {
             Ok(code) => {
                 w.set_busy(true);
@@ -1046,10 +1072,15 @@ fn main() -> anyhow::Result<()> {
     });
 
     window.on_send_file(|| {
-        backend().rt.spawn(async {
+        let picked_in = generation();
+        backend().rt.spawn(async move {
             let Some((name, data)) = files::pick().await else {
                 return;
             };
+            // The room may have been left (or another joined) meanwhile.
+            if generation() != picked_in {
+                return;
+            }
             let size = data.len();
             let mut sent = None;
             with_room(|r| sent = Some(r.send_file(&name, data.clone())));
