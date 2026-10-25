@@ -69,6 +69,8 @@ final class RoomModel: ObservableObject {
     /// When the room was entered, for the call timer.
     private(set) var startedAt = Date()
     @Published private(set) var created = false
+    /// Chat already said someone has another version of Silent.
+    private var toldVersion = false
     @Published private(set) var micOn = true
     @Published private(set) var cameraOn = false
     @Published private(set) var frontCamera = true
@@ -132,6 +134,7 @@ final class RoomModel: ObservableObject {
         chat = []
         frames = [:]
         files = [:]
+        toldVersion = false
         let listener = Listener(model: self)
         self.listener = listener
         DispatchQueue.global(qos: .userInitiated).async {
@@ -389,10 +392,16 @@ final class RoomModel: ObservableObject {
                 leave(reason: "That code doesn't match the room. Check the words and try again.")
             }
         case .peerIncompatible(let peer, let newer):
-            friends[peer]?.status = "Different version of Silent"
-            system(newer
-                ? "Someone joined with a newer version of Silent. Update yours to talk to them."
-                : "Someone joined with an older version of Silent. They need to update to talk to you.")
+            friends[peer] = nil
+            let why = newer
+                ? "Someone here has a newer version of Silent. Update yours to talk to them."
+                : "Someone here has an older version of Silent. They need to update to talk to you."
+            if !created && friends.isEmpty {
+                leave(reason: why)
+            } else if !toldVersion {
+                toldVersion = true
+                system(why)
+            }
         case .peerConnected(let peer, let safetyWords):
             friends[peer]?.status = ""
             friends[peer]?.words = safetyWords.joined(separator: " ")

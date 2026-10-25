@@ -181,6 +181,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         created = code == null
         me = 0u
         leaveOnEntry = null
+        toldVersion = false
         val listener = Listener()
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -253,14 +254,18 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             is RoomUpdate.PeerIncompatible -> {
-                friends[update.peer]?.let { friends[update.peer] = it.copy(status = "Different version of Silent") }
-                system(
-                    if (update.newer) {
-                        "Someone joined with a newer version of Silent. Update yours to talk to them."
-                    } else {
-                        "Someone joined with an older version of Silent. They need to update to talk to you."
-                    },
-                )
+                friends.remove(update.peer)
+                val why = if (update.newer) {
+                    "Someone here has a newer version of Silent. Update yours to talk to them."
+                } else {
+                    "Someone here has an older version of Silent. They need to update to talk to you."
+                }
+                if (!created && friends.isEmpty()) {
+                    leave(why)
+                } else if (!toldVersion) {
+                    toldVersion = true
+                    system(why)
+                }
             }
             is RoomUpdate.PeerConnected -> friends[update.peer]?.let {
                 friends[update.peer] = it.copy(status = "", words = update.safetyWords.joinToString(" "))
@@ -437,6 +442,9 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Set when the room told us to go before joinRoom returned. */
     private var leaveOnEntry: String? = null
+
+    /** Chat already said someone has another version of Silent. */
+    private var toldVersion = false
 
     fun leave(reason: String = "") {
         val r = room ?: run {

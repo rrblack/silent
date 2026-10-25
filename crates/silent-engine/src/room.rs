@@ -112,7 +112,8 @@ pub enum RoomEvent {
         peer: PeerId,
     },
     /// They have the right code but a different version of Silent (`newer`
-    /// if theirs is newer). Nothing further is exchanged with them.
+    /// if theirs is newer). Nothing further is exchanged with them. Comes
+    /// again if they rejoin the relay, under their new id.
     PeerIncompatible {
         peer: PeerId,
         newer: bool,
@@ -420,7 +421,7 @@ impl Room {
     pub fn camera_view(&self, peer: PeerId) -> CameraView {
         CameraView {
             peer,
-            commands: self.commands.clone(),
+            commands: self.commands.downgrade(),
             last: None,
         }
     }
@@ -512,7 +513,8 @@ fn now_ms() -> u64 {
 /// the size changes.
 pub struct CameraView {
     peer: PeerId,
-    commands: mpsc::UnboundedSender<Command>,
+    /// Weak, so a forgotten handle never keeps a dropped room running.
+    commands: mpsc::WeakUnboundedSender<Command>,
     last: Option<(u32, u32)>,
 }
 
@@ -523,7 +525,9 @@ impl CameraView {
         if view.0 == 0 || view.1 == 0 {
             return;
         }
-        // The friend scales their frames as captured, before rotation.
+        // The friend scales their frames as captured, before rotation. That
+        // relies on rotation arriving as a flag with the video (libwebrtc's
+        // default) rather than the sender rotating the pixels.
         let sideways = matches!(
             frame.rotation,
             VideoRotation::VideoRotation90 | VideoRotation::VideoRotation270
@@ -531,9 +535,9 @@ impl CameraView {
         let view = if sideways { (view.1, view.0) } else { view };
         if self.last != Some(view) {
             self.last = Some(view);
-            let _ = self
-                .commands
-                .send(Command::CameraView(self.peer, view.0, view.1));
+            if let Some(commands) = self.commands.upgrade() {
+                let _ = commands.send(Command::CameraView(self.peer, view.0, view.1));
+            }
         }
     }
 }
@@ -1431,7 +1435,8 @@ impl Actor {
     fn sync_senders(&self, only: Option<PeerId>) {
         let friends = self.peers.values().filter(|p| p.verified).count();
         for (&id, p) in &self.peers {
-            if only.is_some_and(|o| o != id) {
+            // A cut-off peer's connection is closed; its senders are dead.
+            if p.rejected || only.is_some_and(|o| o != id) {
                 continue;
             }
             for (kind, sender) in &p.video_senders {
@@ -1439,11 +1444,12 @@ impl Actor {
                     // Smaller in bigger calls, and no bigger than they show it.
                     VideoKind::Camera => {
                         let encoding = &self.media.camera.encoding;
-                        let view = view_scale(self.camera_frame(), p.viewing.unwrap_or_default());
+                        let frame = self.camera_frame();
+                        let view = view_scale(frame, p.viewing.unwrap_or_default());
                         (
                             self.media_state.camera,
                             encoding,
-                            encoding.mesh_scale(friends).max(view),
+                            encoding.mesh_scale(frame, friends).max(view),
                         )
                     }
                     // Screens stay sharp: text has to be readable.

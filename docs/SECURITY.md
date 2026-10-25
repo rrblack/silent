@@ -41,7 +41,7 @@ Every pair of peers runs symmetric SPAKE2 (Ed25519 group, `spake2` crate). The S
 - the nameplate
 - the two peer ids
 
-So a transcript can't be replayed into another room or between a different pair of peers. The app protocol version (`PROTOCOL_VERSION`) travels in the sealed `Hello`; when two builds disagree, each side stops talking to the other and says the friend has a different version of Silent.
+So a transcript can't be replayed into another room or between a different pair of peers. The app protocol version (`PROTOCOL_VERSION`) travels in the sealed `Hello`; when two builds disagree, a build of protocol 5 or later stops talking to the other and says the friend has a different version of Silent (older builds just never finish connecting).
 
 HKDF-SHA256 then derives three keys from the SPAKE2 output:
 
@@ -65,7 +65,7 @@ The signaling carried this way covers display names, session ids, codec wishes (
 WebRTC's DTLS uses the certificate fingerprints from the sealed SDP, so the DTLS handshake is authenticated end to end:
 
 - **Media:** DTLS-SRTP with ephemeral ECDHE keys, which gives forward secrecy. Each connection carries the voice, camera, screen, and (since protocol 4) a separate stream for computer audio shared along with the screen.
-- **Chat and media state:** a DTLS data channel (negotiated id 0). Since protocol 5 it also carries how big each person shows a friend's camera (width and height in pixels), so the friend encodes no larger than that; it reveals only a tile size, and only to that friend.
+- **Chat and media state:** a DTLS data channel (negotiated id 0). Since protocol 5 it also carries how big each person shows a friend's camera (width and height in pixels), so the friend encodes no larger than that; it reveals only a tile size, and only to that friend, though its changes over time hint at layout changes (a resized window, someone else spotlighted, picture-in-picture).
 - **Files:** a second DTLS data channel (id 1), so a transfer never holds up chat. A file is a `Start` frame (name, size) followed by chunks, on an ordered, reliable channel. Receivers accept at most 64 MiB per file and 4 transfers per friend at a time, strip directories and control characters from names, and keep files in memory only; nothing is written to disk unless the user saves a file somewhere.
 
 ### Reconnecting

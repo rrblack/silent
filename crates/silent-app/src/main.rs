@@ -152,6 +152,8 @@ struct UiState {
     sent_files: u32,
     /// When the room was entered, for the call timer.
     started: std::time::Instant,
+    /// Chat already said someone has another version of Silent.
+    told_version: bool,
 }
 
 thread_local! {
@@ -574,14 +576,20 @@ impl UiState {
                 }
             }
             RoomEvent::PeerIncompatible { peer, newer } => {
-                if let Some(p) = self.peers.get_mut(&peer) {
-                    p.status = "Different version of Silent";
-                }
-                self.system(if newer {
-                    "Someone joined with a newer version of Silent. Update yours to talk to them."
+                self.peers.remove(&peer);
+                let why = if newer {
+                    "Someone here has a newer version of Silent. Update yours to talk to them."
                 } else {
-                    "Someone joined with an older version of Silent. They need to update to talk to you."
-                });
+                    "Someone here has an older version of Silent. They need to update to talk to you."
+                };
+                if !self.created && self.peers.is_empty() {
+                    slint::Timer::single_shot(Duration::ZERO, move || leave_room(Some(why)));
+                    return;
+                }
+                if !self.told_version {
+                    self.told_version = true;
+                    self.system(why);
+                }
             }
             RoomEvent::PeerConnected { peer, safety_words } => {
                 if let Some(p) = self.peers.get_mut(&peer) {
@@ -904,6 +912,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 files: HashMap::new(),
                 sent_files: 0,
                 started: std::time::Instant::now(),
+                told_version: false,
             };
             w.set_elapsed(elapsed_text(Duration::ZERO));
             w.set_tiles(ModelRc::from(state.tiles.clone()));

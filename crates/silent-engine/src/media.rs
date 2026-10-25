@@ -90,17 +90,19 @@ pub struct Encoding {
 }
 
 impl Encoding {
-    /// How much a camera is scaled down in a call with `friends` others.
-    /// Every friend gets their own encoder in a mesh, so bigger calls send
-    /// smaller video: 720p, then 540p, then 480p (1080p: 720p, then 540p).
-    pub(crate) fn mesh_scale(&self, friends: usize) -> f64 {
+    /// How much a camera capturing `frame` sized pictures is scaled down in
+    /// a call with `friends` others. Every friend gets their own encoder in a
+    /// mesh, so bigger calls send smaller video: 720p, then 540p, then 480p
+    /// (1080p: 720p, then 540p). The short edge counts, so a phone held
+    /// upright or a 4:3 webcam isn't shrunk below that.
+    pub(crate) fn mesh_scale(&self, frame: (u32, u32), friends: usize) -> f64 {
         let heights: [u32; 3] = if self.max_height >= 1080 {
             [1080, 720, 540]
         } else {
             [720, 540, 480]
         };
         let target = heights[friends.saturating_sub(1).min(2)];
-        (self.max_height as f64 / target as f64).max(1.0)
+        (f64::from(frame.0.min(frame.1)) / f64::from(target)).max(1.0)
     }
 }
 
@@ -918,13 +920,18 @@ mod tests {
     fn cameras_shrink_as_calls_grow() {
         let standard = CameraProfile::Standard.encoding();
         let heights: Vec<u32> = (1..=3)
-            .map(|friends| (720.0 / standard.mesh_scale(friends)).round() as u32)
+            .map(|friends| (720.0 / standard.mesh_scale((1280, 720), friends)).round() as u32)
             .collect();
         assert_eq!(heights, [720, 540, 480]);
         let high = CameraProfile::High.encoding();
-        assert_eq!(high.mesh_scale(1), 1.0);
-        assert_eq!(high.mesh_scale(3), 2.0);
-        assert_eq!(standard.mesh_scale(0), 1.0);
+        assert_eq!(high.mesh_scale((1920, 1080), 1), 1.0);
+        assert_eq!(high.mesh_scale((1920, 1080), 3), 2.0);
+        assert_eq!(standard.mesh_scale((1280, 720), 0), 1.0);
+        // A phone held upright (720x405 as captured) and a 640x480 webcam
+        // are already at or under 480p: they stay whole.
+        assert_eq!(standard.mesh_scale((720, 405), 3), 1.0);
+        assert_eq!(standard.mesh_scale((640, 480), 3), 1.0);
+        assert_eq!(standard.mesh_scale((405, 720), 2), 1.0);
     }
 
     #[test]
