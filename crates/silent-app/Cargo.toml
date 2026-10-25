@@ -26,6 +26,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Native open/save dialogs; the XDG portal on Linux, so no GTK.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# Join and leave chimes; ALSA on Linux, WASAPI on Windows, CoreAudio on macOS.
+cpal = "0.16"
 
 [build-dependencies]
 slint-build = "1.18"

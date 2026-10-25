@@ -10,7 +10,7 @@ The state of the project, how to pick it up, and what to do next. First written 
 | Rust relay (`silent-relay`) | ✅ | 9 protocol tests, incl. the join budget and evicting wrong-code peers | |
 | Cloudflare Worker relay (`signal/`) | ✅ | Same 9 tests against `wrangler dev`, plus all 11 call tests through it | Deployed? Check section 4 |
 | Call engine (`silent-engine`, protocol v3) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, relay dropping mid-call and coming back, ICE restart, H.264 negotiation, **speaking detection and mute-for-me**, **3 MiB file transfer with chat flowing alongside** | Real networks, NAT, TURN, a real network switch |
-| Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me and the volume slider, a received image shown in chat with Save** | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
+| Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me and the volume slider, a received image shown in chat with Save**, the join chime (captured through an ALSA file sink) and the taskbar alert (the X11 urgency hint) | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
 | Installers | ✅ | CI builds a Windows zip (exe with icon), macOS dmg (.app with permission texts, ad hoc signed), Linux .deb and tarball; the .deb was inspected locally | Installing them on real machines |
 | Android app | ✅ | APK builds locally and in CI | **Never run on a phone** |
 | iOS app | 🟡 early | SwiftUI app with calls, camera, chat, files and a ReplayKit screen-sharing extension; builds for the simulator in CI (see `ios/README.md`) | Never run; screen sharing needs a signed build |
@@ -72,6 +72,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] **Ctrl+D** mutes (the tile label turns red on both sides), **Ctrl+E** toggles the camera.
    - [ ] Settings → **Push to talk**: in the room you start muted; holding Space (outside the chat box; Esc leaves it) unmutes.
    - [ ] **Devices**: pick another microphone or speaker mid-call; the other window should hear the change at once.
+   - [ ] A chime plays when the other window joins or leaves (Settings → "Play a sound…" turns it off). With the window in the background, a chat message or a join flashes its taskbar button.
 
 ### B. Two devices on the same Wi-Fi (PC + Android phone)
 1. On the PC, run `silent-relay.exe`. Allow it through Windows Firewall, then find the PC's IP with `ipconfig` (for example `192.168.1.23`).
@@ -87,6 +88,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] The call keeps going with the phone screen off or the app in the background, and after pressing Back.
    - [ ] The call notification's **Mute** and **Leave** buttons work.
    - [ ] The camera flip button switches between front and back.
+   - [ ] A short beep when someone joins or leaves (Settings can turn it off).
    - [ ] The paperclip next to the chat box sends a photo both ways; **Save…** stores it. Long-press a friend's tile: mute them or change their volume, for you only.
    - [ ] Press Home (or Back) mid-call: the call shrinks to a picture-in-picture window showing a friend's screen share or camera.
    - [ ] **Reconnect:** turn the phone's Wi-Fi off mid-call (so it moves to mobile data). Expect "Reconnecting…" for a few seconds, then the call resumes. Needs the relay from section 4.
@@ -136,7 +138,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 - **Rejoining after a relay outage starts every pair over.** New keys mean new safety words; compare them again if it matters.
 - **Room squatting and join spam.** Someone who joins with a wrong code is now removed automatically by the people who were there first, but can rejoin until the per-room join budget runs out, and a join spammer can keep dropped friends from rejoining for a minute. See `docs/SECURITY.md`.
 - **Android:** first run on a device is untested. Remote video is capped at 30 fps and 960 px for camera tiles, by design for battery.
-- **iOS:** only built for the simulator so far. Screen sharing needs a signed build (App Group), and there's no CallKit yet. The bundle ids `app.silent`, `app.silent.broadcast` and the App Group `group.app.silent` must be registrable under the owner's Apple team; if not, rename them together in `ios/project.yml`, `ScreenSocket.appGroup` and `BroadcastButton.preferredExtension`. Camera rotation follows how the phone is held, untested on a device.
+- **iOS:** only built for the simulator so far. Screen sharing needs a signed build (App Group), and there's no CallKit yet. The bundle ids `app.silent`, `app.silent.broadcast` and the App Group `group.app.silent` must be registrable under the owner's Apple team; if not, rename them together in `ios/project.yml`, `ScreenSocket.appGroup` and `BroadcastButton.preferredExtension`. Camera rotation follows how the phone is held, untested on a device. The join and leave sounds are system sounds, which iOS may keep quiet during a call.
 
 ## 6. Next steps, in order
 
@@ -160,7 +162,7 @@ npx wrangler deploy        # prints https://silent-signal.<your-account>.workers
 | Relay URL | free `*.workers.dev` or a custom domain | Gets baked into every build. |
 | Remember settings locally? | no (current) / name, relay URL and device choices only | Convenience vs. the "nothing stored" promise. Not built, on purpose, until you decide. |
 | Code signing | Azure Trusted Signing (~$10/mo), Apple Developer ($99/yr) | Removes install warnings; Apple's is required for iOS. |
-| Public or private | | CI minutes: private repos get 2,000 free minutes a month, and each macOS minute counts as 10. Every push to `main` builds the macOS app (~5 min, so ~50 minutes of the budget); the iOS workflow only runs when `ios/` or `crates/silent-ffi` change. Public repos build for free. |
+| Public or private | | CI minutes: private repos get 2,000 free minutes a month, and each macOS minute counts as 10. Every push to `main` builds the macOS app (~5 min, so ~50 minutes of the budget); the iOS workflow only runs when `ios/`, `crates/silent-ffi`, `Cargo.lock` or `third_party/` change. Public repos build for free. |
 
 ## 8. How to start the next Claude session
 

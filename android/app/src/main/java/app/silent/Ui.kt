@@ -192,6 +192,7 @@ fun HomeScreen(vm: RoomViewModel) {
             SettingSwitch("Hide my IP from friends (relay all media)", vm.relayOnly) { vm.relayOnly = it }
             SettingSwitch("HD camera (1080p, 60 fps)", vm.cameraHigh) { vm.cameraHigh = it }
             SettingSwitch("Sharp screen share (1440p, 30 fps)", vm.screenDetail) { vm.screenDetail = it }
+            SettingSwitch("Sound when friends join or leave", vm.sounds) { vm.sounds = it }
         }
     }
 }

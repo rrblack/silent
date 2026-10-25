@@ -2,6 +2,8 @@ package app.silent
 
 import android.app.Application
 import android.graphics.BitmapFactory
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.getValue
@@ -74,6 +76,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
     var relayOnly by mutableStateOf(false)
     var cameraHigh by mutableStateOf(false)
     var screenDetail by mutableStateOf(false)
+    var sounds by mutableStateOf(true)
     var busy by mutableStateOf(false)
     var error by mutableStateOf("")
 
@@ -212,7 +215,10 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                     slots.remove(TileKey(old, true))
                     friends.remove(old)
                 }
-                if (returning == null) system("${update.name} joined")
+                if (returning == null) {
+                    system("${update.name} joined")
+                    chime(joined = true)
+                }
                 friends[update.peer]?.let {
                     friends[update.peer] = it.copy(
                         name = update.name, status = "Securing connection…", verified = true,
@@ -236,7 +242,10 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
                 friends[update.peer] = it.copy(status = "Reconnecting…")
             }
             is RoomUpdate.PeerLeft -> {
-                friends.remove(update.peer)?.takeIf { it.verified }?.let { system("${it.name} left") }
+                friends.remove(update.peer)?.takeIf { it.verified }?.let {
+                    system("${it.name} left")
+                    chime(joined = false)
+                }
                 slots.remove(TileKey(update.peer, false))
                 slots.remove(TileKey(update.peer, true))
             }
@@ -410,8 +419,18 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         thread(name = "silent-leave") { r.leave() }
     }
 
+    /** Short tones on the call's audio stream; `null` if the phone has none to spare. */
+    private val tones = runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 60) }.getOrNull()
+
+    /** A rising beep when a friend joins, a falling one when they leave. */
+    private fun chime(joined: Boolean) {
+        if (!sounds) return
+        tones?.startTone(if (joined) ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_PROMPT, 200)
+    }
+
     override fun onCleared() {
         leave()
+        tones?.release()
         super.onCleared()
     }
 }

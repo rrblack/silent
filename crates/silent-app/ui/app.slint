@@ -298,6 +298,7 @@ component Home inherits Rectangle {
     in-out property <int> screen-quality;
     in-out property <bool> relay-only;
     in-out property <bool> push-to-talk;
+    in-out property <bool> sounds;
     in-out property <string> relay-url;
     in property <[string]> microphones;
     in property <[string]> speakers;
@@ -417,6 +418,10 @@ component Home inherits Rectangle {
                     CheckBox {
                         text: "Push to talk: hold Space to speak";
                         checked <=> root.push-to-talk;
+                    }
+                    CheckBox {
+                        text: "Play a sound when friends join or leave";
+                        checked <=> root.sounds;
                     }
                     Text { text: "Relay server"; color: Palette.subtext; font-size: 12px; }
                     LineEdit { text <=> root.relay-url; }
@@ -710,6 +715,7 @@ export component AppWindow inherits Window {
     in-out property <int> screen-quality: 0;
     in-out property <bool> relay-only: false;
     in-out property <bool> push-to-talk: false;
+    in-out property <bool> sounds: true;
     in-out property <string> relay-url;
 
     in property <string> code;
@@ -767,6 +773,7 @@ export component AppWindow inherits Window {
         screen-quality <=> root.screen-quality;
         relay-only <=> root.relay-only;
         push-to-talk <=> root.push-to-talk;
+        sounds <=> root.sounds;
         relay-url <=> root.relay-url;
         microphones: root.microphones;
         speakers: root.speakers;

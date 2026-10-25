@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod files;
+mod sounds;
 mod video;
 
 use std::cell::RefCell;
@@ -419,6 +420,13 @@ impl UiState {
         });
     }
 
+    /// Plays `chime` unless sounds are off in Settings.
+    fn chime(&self, chime: sounds::Chime) {
+        if self.window.upgrade().is_some_and(|w| w.get_sounds()) {
+            sounds::play(chime);
+        }
+    }
+
     /// Flashes the taskbar entry (bounces the Dock icon on macOS) if the
     /// window is in the background, for a message or someone joining.
     fn ask_attention(&self) {
@@ -466,6 +474,7 @@ impl UiState {
                 }
                 if returning.is_none() {
                     self.system(format!("{name} joined"));
+                    self.chime(sounds::Chime::Joined);
                     self.ask_attention();
                 }
                 if let Some(p) = self.peers.get_mut(&peer) {
@@ -508,6 +517,7 @@ impl UiState {
             RoomEvent::PeerLeft { peer } => {
                 if let Some(p) = self.peers.remove(&peer).filter(|p| p.verified) {
                     self.system(format!("{} left", p.name));
+                    self.chime(sounds::Chime::Left);
                 }
                 let prefix = format!("{peer}:");
                 self.frames.retain(|k, _| !k.starts_with(&prefix));

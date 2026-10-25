@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Foundation
 import Network
@@ -52,6 +53,7 @@ final class RoomModel: ObservableObject {
     @Published var joinCode = ""
     @Published var relayUrl = RoomModel.bakedRelay
     @Published var relayOnly = false
+    @Published var sounds = true
     @Published var cameraHigh = false
     @Published var busy = false
     @Published var error = ""
@@ -323,6 +325,13 @@ final class RoomModel: ObservableObject {
         }
     }
 
+    /// The system's begin and end recording sounds for a friend joining or
+    /// leaving.
+    private func chime(joined: Bool) {
+        guard sounds else { return }
+        AudioServicesPlaySystemSound(joined ? 1113 : 1114)
+    }
+
     private func system(_ text: String) {
         chat.append(ChatLine(who: "", text: text, system: true))
     }
@@ -343,7 +352,10 @@ final class RoomModel: ObservableObject {
                 frames[TileKey(peer: old, screen: false)] = nil
                 frames[TileKey(peer: old, screen: true)] = nil
             }
-            if !returning { system("\(name) joined") }
+            if !returning {
+                system("\(name) joined")
+                chime(joined: true)
+            }
             friends[peer]?.name = name
             friends[peer]?.status = "Securing connection…"
             friends[peer]?.verified = true
@@ -362,6 +374,7 @@ final class RoomModel: ObservableObject {
         case .peerLeft(let peer):
             if let friend = friends.removeValue(forKey: peer), friend.verified {
                 system("\(friend.name) left")
+                chime(joined: false)
             }
             frames[TileKey(peer: peer, screen: false)] = nil
             frames[TileKey(peer: peer, screen: true)] = nil

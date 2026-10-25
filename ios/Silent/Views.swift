@@ -58,6 +58,7 @@ struct HomeView: View {
                 if showSettings {
                     Toggle("Camera in 1080p, 60 fps", isOn: $model.cameraHigh)
                     Toggle("Hide my IP from friends (relay all media)", isOn: $model.relayOnly)
+                    Toggle("Sound when friends join or leave", isOn: $model.sounds)
                     field("Relay server", text: $model.relayUrl)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
