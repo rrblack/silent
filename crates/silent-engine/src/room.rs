@@ -47,7 +47,7 @@ use crate::media::{
     STREAM_AUDIO,
 };
 use crate::signaling::{self, SignalError, SignalLink, Welcome};
-use crate::stats::{self, PeerStats};
+use crate::stats::{self, PeerStats, Quality};
 
 const START_BITRATE_BPS: u64 = 1_200_000;
 /// The loudest [`Room::set_friend_volume`] allows: 200 %.
@@ -145,6 +145,12 @@ pub enum RoomEvent {
     Speaking {
         peers: Vec<PeerId>,
     },
+    /// A friend's connection got poor (lost audio, long delay) or good
+    /// again. Every friend starts out good.
+    ConnectionQuality {
+        peer: PeerId,
+        quality: Quality,
+    },
     /// A friend started sending a file. `id` is theirs, unique per sender.
     FileIncoming {
         from: PeerId,
@@ -233,7 +239,7 @@ enum Internal {
     },
     Levels {
         me: Option<f64>,
-        peers: Vec<(PeerId, f64)>,
+        peers: Vec<(PeerId, stats::Pulse)>,
     },
 }
 
@@ -498,6 +504,7 @@ struct Peer {
     muted_for_me: bool,
     /// Playback volume set with [`Room::set_friend_volume`]; `None` is normal.
     volume: Option<f64>,
+    quality: stats::QualityMeter,
     video_senders: Vec<(VideoKind, RtpSender)>,
 }
 
@@ -1627,28 +1634,29 @@ impl Actor {
             let mut me = None;
             let mut peers = Vec::with_capacity(pcs.len());
             for (id, pc) in pcs {
-                let levels = stats::audio_levels(&pc).await;
-                me = me.or(levels.sent);
-                if let Some(level) = levels.received {
-                    peers.push((id, level));
-                }
+                let pulse = stats::pulse(&pc).await;
+                me = me.or(pulse.sent);
+                peers.push((id, pulse));
             }
             let _ = internal.send(Internal::Levels { me, peers });
         });
     }
 
-    fn on_levels(&mut self, me: Option<f64>, peers: Vec<(PeerId, f64)>) {
+    fn on_levels(&mut self, me: Option<f64>, peers: Vec<(PeerId, stats::Pulse)>) {
         self.levels_pending = false;
         let now = Instant::now();
+        self.judge_quality(now, &peers);
         let mic_on = self.media_state.mic;
         let heard = me
             .filter(|_| mic_on)
             .map(|level| (self.me, level))
             .into_iter()
-            .chain(peers.into_iter().filter(|(id, _)| {
+            .chain(peers.into_iter().filter_map(|(id, pulse)| {
+                let level = pulse.received?;
                 self.peers
-                    .get(id)
+                    .get(&id)
                     .is_some_and(|p| p.verified && !p.muted_for_me)
+                    .then_some((id, level))
             }));
         for (id, level) in heard {
             if level >= SPEAKING_LEVEL {
@@ -1668,6 +1676,27 @@ impl Actor {
         if speaking != self.speaking {
             self.speaking = speaking.clone();
             self.emit(RoomEvent::Speaking { peers: speaking });
+        }
+    }
+
+    /// Updates each friend's connection quality from the latest readings.
+    /// Friends without a reading (reconnecting) start their meter over.
+    fn judge_quality(&mut self, now: Instant, readings: &[(PeerId, stats::Pulse)]) {
+        let mut changes = Vec::new();
+        for (&id, p) in &mut self.peers {
+            match readings.iter().find(|(peer, _)| *peer == id) {
+                Some((_, pulse)) => {
+                    if let Some(quality) = p.quality.feed(now, pulse.rtt_ms, pulse.audio_packets) {
+                        changes.push((id, quality));
+                    }
+                }
+                None => p.quality.reset(),
+            }
+        }
+        for (peer, quality) in changes {
+            if self.peers.get(&peer).is_some_and(|p| p.verified) {
+                self.emit(RoomEvent::ConnectionQuality { peer, quality });
+            }
         }
     }
 

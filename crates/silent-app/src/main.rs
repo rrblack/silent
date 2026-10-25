@@ -15,8 +15,8 @@ use silent_core::proto::MediaState;
 use silent_core::InviteCode;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
 use silent_engine::{
-    camera, capture, AudioDevice, AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Room,
-    RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
+    camera, capture, AudioDevice, AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Quality,
+    Room, RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
 };
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 use tokio::task::JoinHandle;
@@ -99,6 +99,8 @@ struct PeerView {
     muted_for_me: bool,
     /// Their volume for you, in percent.
     volume: i32,
+    /// Their connection is losing audio or lagging.
+    poor_connection: bool,
     /// The user said the safety words matched.
     confirmed: bool,
 }
@@ -295,6 +297,7 @@ impl UiState {
             speaking: kind == VideoKind::Camera && self.speaking.contains(&peer),
             muted_for_me: self.peers.get(&peer).is_some_and(|p| p.muted_for_me),
             volume: self.peers.get(&peer).map_or(100, |p| p.volume),
+            poor_connection: self.peers.get(&peer).is_some_and(|p| p.poor_connection),
         }
     }
 
@@ -458,6 +461,7 @@ impl UiState {
                     verified: false,
                     muted_for_me: false,
                     volume: 100,
+                    poor_connection: false,
                     confirmed: false,
                 };
                 self.peers.insert(peer, view);
@@ -601,6 +605,11 @@ impl UiState {
             }
             RoomEvent::Speaking { peers } => {
                 self.speaking = peers.into_iter().collect();
+            }
+            RoomEvent::ConnectionQuality { peer, quality } => {
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    p.poor_connection = quality == Quality::Poor;
+                }
             }
             RoomEvent::Removed => {
                 // Runs after this borrow of the UI state ends.

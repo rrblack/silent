@@ -10,7 +10,7 @@ The state of the project, how to pick it up, and what to do next. First written 
 | Rust relay (`silent-relay`) | ✅ | 9 protocol tests, incl. the join budget and evicting wrong-code peers | |
 | Cloudflare Worker relay (`signal/`) | ✅ | Same 9 tests against `wrangler dev`, plus all 11 call tests through it | Deployed? Check section 4 |
 | Call engine (`silent-engine`, protocol v3) | ✅ | Real WebRTC calls in-process: 1:1 with chat and 1080p60 screen share, wrong-code isolation, 4-person mesh plus 5th turned away, rotated phone frames, relay dropping mid-call and coming back, ICE restart, H.264 negotiation, **speaking detection and mute-for-me**, **3 MiB file transfer with chat flowing alongside** | Real networks, NAT, TURN, a real network switch |
-| Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me and the volume slider, a received image shown in chat with Save**, the join chime (captured through an ALSA file sink) and the taskbar alert (the X11 urgency hint) | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
+| Desktop app (Slint, red and black) | ✅ | On a virtual display with a second app or the test bot: auto-spotlight of a friend's screen, full screen (F11, Esc), Ctrl+D mute, Devices sheet, **green ring on whoever is talking, Mute for me and the volume slider, a received image shown in chat with Save**, the join chime (captured through an ALSA file sink), the taskbar alert (the X11 urgency hint), and "weak connection" on a friend's tile under 20 % packet loss (iptables), gone again once the loss stops | Real webcam, mic, speakers, device switching, GPU encoding, the file dialogs |
 | Installers | ✅ | CI builds a Windows zip (exe with icon), macOS dmg (.app with permission texts, ad hoc signed), Linux .deb and tarball; the .deb was inspected locally | Installing them on real machines |
 | Android app | ✅ | APK builds locally and in CI | **Never run on a phone** |
 | iOS app | 🟡 early | SwiftUI app with calls, camera, chat, files and a ReplayKit screen-sharing extension; builds for the simulator in CI (see `ios/README.md`) | Never run; screen sharing needs a signed build |
@@ -96,6 +96,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
 
 ### C. Over the internet (after section 4)
 - [ ] A friend on another network joins.
+- [ ] On a bad connection (a phone at the edge of Wi-Fi), the friend's tile says "weak connection" within a few seconds, and stops once it recovers.
 - [ ] With "Hide my IP" on, the call still connects. This needs TURN.
 - [ ] Four people at once: check CPU and battery.
 

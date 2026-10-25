@@ -16,6 +16,8 @@ struct Friend: Identifiable {
     var mutedForMe = false
     /// How loud they play on this phone, in percent.
     var volume = 100
+    /// Their connection is losing audio or lagging.
+    var poorConnection = false
     /// You compared safety words with them and they matched.
     var confirmed = false
 }
@@ -394,6 +396,8 @@ final class RoomModel: ObservableObject {
             if notice.hasPrefix("Relay") { notice = "" }
         case .speaking(let peers):
             speaking = Set(peers)
+        case .connectionQuality(let peer, let poor):
+            friends[peer]?.poorConnection = poor
         case .removed:
             leave(reason: "You were removed from the room: your code doesn't match. Check the words and try again.")
         case .fileIncoming(let from, let id, let name, let size):

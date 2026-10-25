@@ -24,6 +24,7 @@ pub use room::{FileTooLarge, Room, RoomEvent, Settings, MAX_FRIEND_VOLUME};
 pub use signaling::SignalError;
 pub use silent_core::proto::MediaState;
 pub use silent_core::PeerId;
+pub use stats::Quality;
 
 const NAMEPLATE_ATTEMPTS: usize = 8;
 

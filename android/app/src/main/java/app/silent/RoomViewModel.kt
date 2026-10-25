@@ -41,6 +41,8 @@ data class Friend(
     val mutedForMe: Boolean = false,
     /** How loud they play on this phone, in percent. */
     val volume: Int = 100,
+    /** Their connection is losing audio or lagging. */
+    val poorConnection: Boolean = false,
     /** You compared safety words with them and they matched. */
     val confirmed: Boolean = false,
 )
@@ -263,6 +265,9 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
             is RoomUpdate.RelayLost -> notice = "Relay offline: the call continues, reconnecting…"
             is RoomUpdate.RelayRestored -> if (notice.startsWith("Relay")) notice = ""
             is RoomUpdate.Speaking -> speaking = update.peers.toSet()
+            is RoomUpdate.ConnectionQuality -> friends[update.peer]?.let {
+                friends[update.peer] = it.copy(poorConnection = update.poor)
+            }
             is RoomUpdate.Removed -> leave("You were removed from the room: your code doesn't match. Check the words and try again.")
             is RoomUpdate.FileIncoming -> chat.add(
                 ChatLine(

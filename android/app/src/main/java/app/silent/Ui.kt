@@ -417,7 +417,8 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
                 label = f.name + (if (tile.screen) "'s screen" else "") +
                     (if (!tile.screen && !f.mic) " · muted" else "") +
                     (if (!tile.screen && f.mutedForMe) " · muted for you" else "") +
-                    (if (!tile.screen && f.confirmed) " · verified" else "")
+                    (if (!tile.screen && f.confirmed) " · verified" else "") +
+                    (if (!tile.screen && f.poorConnection) " · weak connection" else "")
                 val image = vm.slot(TileKey(f.id, tile.screen)).image.value
                 val showing = if (tile.screen) f.screen else f.camera
                 if (showing && image != null) {

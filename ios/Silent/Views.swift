@@ -182,7 +182,8 @@ struct RoomView: View {
                 label(
                     (friend.mic || screen ? "" : "muted · ") + friend.name + (screen ? "'s screen" : "")
                         + (friend.mutedForMe && !screen ? " · muted for you" : "")
-                        + (friend.confirmed && !screen ? " · verified" : ""),
+                        + (friend.confirmed && !screen ? " · verified" : "")
+                        + (friend.poorConnection && !screen ? " · weak connection" : ""),
                     muted: !friend.mic && !screen
                 )
             }

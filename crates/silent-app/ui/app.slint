@@ -16,6 +16,8 @@ export struct Tile {
     muted-for-me: bool,
     /// How loud they play for you, in percent (100 is normal).
     volume: int,
+    /// Their connection is losing audio or lagging.
+    poor-connection: bool,
 }
 
 export struct ChatLine {
@@ -197,7 +199,7 @@ component VideoTile inherits Rectangle {
         label := Text {
             x: 10px;
             width: parent.width - 20px;
-            text: (tile.mic || tile.kind == "screen" ? "" : "muted  ·  ") + tile.name + (tile.kind == "screen" ? "'s screen" : "") + (tile.is-me ? " (you)" : "") + (tile.confirmed && tile.kind == "camera" ? "  ·  verified" : "");
+            text: (tile.mic || tile.kind == "screen" ? "" : "muted  ·  ") + tile.name + (tile.kind == "screen" ? "'s screen" : "") + (tile.is-me ? " (you)" : "") + (tile.confirmed && tile.kind == "camera" ? "  ·  verified" : "") + (tile.poor-connection && tile.kind == "camera" ? "  ·  weak connection" : "");
             color: Palette.text;
             font-size: root.small ? 11px : 12px;
             vertical-alignment: center;

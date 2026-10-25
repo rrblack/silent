@@ -137,6 +137,11 @@ pub enum RoomUpdate {
     Speaking {
         peers: Vec<u32>,
     },
+    /// A friend's connection got poor (choppy or late audio) or good again.
+    ConnectionQuality {
+        peer: u32,
+        poor: bool,
+    },
     FileIncoming {
         from: u32,
         id: u32,
@@ -547,6 +552,10 @@ fn to_update(event: RoomEvent) -> Option<RoomUpdate> {
         RoomEvent::RelayRestored => RoomUpdate::RelayRestored,
         RoomEvent::Removed => RoomUpdate::Removed,
         RoomEvent::Speaking { peers } => RoomUpdate::Speaking { peers },
+        RoomEvent::ConnectionQuality { peer, quality } => RoomUpdate::ConnectionQuality {
+            peer,
+            poor: quality == silent_engine::Quality::Poor,
+        },
         RoomEvent::FileIncoming {
             from,
             id,
