@@ -42,7 +42,7 @@ Guidance for Claude working in this repo. Read [HANDOFF.md](HANDOFF.md) for the 
 # Linux needs clang >= 21 for libwebrtc's prebuilt archive:
 export CC=clang-21 CXX=clang++-21
 
-cargo test --workspace                 # 61 tests incl. real in-process WebRTC calls (~35 s after first build)
+cargo test --workspace                 # 65 tests incl. real in-process WebRTC calls (~35 s after first build)
 cargo clippy --workspace --all-targets # must stay warning-free
 cargo fmt --all
 cargo run --release -p silent-app      # twice, to call yourself

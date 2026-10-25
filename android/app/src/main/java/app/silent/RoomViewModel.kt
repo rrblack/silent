@@ -385,6 +385,11 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         room?.setFriendVolume(peer, percent / 100.0)
     }
 
+    /** How big a friend's camera or screen is shown, in pixels, so frames come no larger. */
+    fun setViewSize(peer: UInt, screen: Boolean, width: Int, height: Int) {
+        room?.setViewSize(peer, screen, width.coerceAtLeast(0).toUInt(), height.coerceAtLeast(0).toUInt())
+    }
+
     fun toggleSpeaker() {
         speakerOn = !speakerOn
         CallService.setSpeaker(getApplication(), speakerOn)

@@ -15,6 +15,7 @@ use futures_util::StreamExt;
 use silent_core::InviteCode;
 use silent_engine::libwebrtc::video_stream::native::NativeVideoStream;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
+use silent_engine::render::{view_box, Fit, ViewSize};
 use silent_engine::{
     AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Room, RoomError, RoomEvent,
     ScreenProfile, ScreenTarget, Settings, VideoInput, VideoKind,
@@ -29,7 +30,8 @@ uniffi::setup_scaffolding!();
 
 /// Remote video handed to the UI is capped in size and rate: phone screens
 /// are small and every frame crosses the FFI boundary as RGBA. The cap is on
-/// the long edge, so portrait phone video is not squeezed.
+/// the long edge, so portrait phone video is not squeezed. Below the cap,
+/// frames come at the size the UI shows them (`SilentRoom::set_view_size`).
 const CAMERA_RENDER: u32 = 960;
 const SCREEN_RENDER: u32 = 1920;
 const RENDER_INTERVAL: Duration = Duration::from_millis(33);
@@ -239,6 +241,7 @@ pub fn join_room(
 }
 
 type Pumps = Arc<Mutex<HashMap<(PeerId, VideoKind), JoinHandle<()>>>>;
+type ViewSizes = Arc<Mutex<HashMap<(PeerId, VideoKind), Arc<ViewSize>>>>;
 
 #[derive(uniffi::Object)]
 pub struct SilentRoom {
@@ -250,6 +253,8 @@ pub struct SilentRoom {
     tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// One video pump per friend and kind; stopped when they leave.
     pumps: Pumps,
+    /// How big each friend's video is shown, for the pumps.
+    view_sizes: ViewSizes,
 }
 
 impl SilentRoom {
@@ -257,6 +262,7 @@ impl SilentRoom {
         let mut events = room.take_events();
         let tasks: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::default();
         let pumps: Pumps = Arc::default();
+        let view_sizes: ViewSizes = Arc::default();
         let this = Arc::new(SilentRoom {
             code: room.code().to_string(),
             me: room.me(),
@@ -265,14 +271,21 @@ impl SilentRoom {
             room: Mutex::new(Some(room)),
             tasks: tasks.clone(),
             pumps: pumps.clone(),
+            view_sizes: view_sizes.clone(),
         });
 
         let handle = runtime().spawn(async move {
             while let Some(event) = events.recv().await {
                 let gone = match &event {
                     RoomEvent::RemoteVideo { peer, kind, track } => {
-                        let pump =
-                            runtime().spawn(pump(*peer, *kind, track.clone(), listener.clone()));
+                        let view = view_size(&view_sizes, *peer, *kind);
+                        let pump = runtime().spawn(pump(
+                            *peer,
+                            *kind,
+                            track.clone(),
+                            view,
+                            listener.clone(),
+                        ));
                         if let Some(old) = pumps.lock().unwrap().insert((*peer, *kind), pump) {
                             old.abort();
                         }
@@ -358,6 +371,18 @@ impl SilentRoom {
     /// 2.0. Kept if they reconnect.
     pub fn set_friend_volume(&self, peer: u32, volume: f64) {
         self.with_room(|r| r.set_friend_volume(peer, volume));
+    }
+
+    /// Tells the room how big a friend's camera (or screen, with `screen`)
+    /// is shown, in pixels, so frames arrive no larger than that. Call it
+    /// whenever the view changes size.
+    pub fn set_view_size(&self, peer: u32, screen: bool, width: u32, height: u32) {
+        let kind = if screen {
+            VideoKind::Screen
+        } else {
+            VideoKind::Camera
+        };
+        view_size(&self.view_sizes, peer, kind).set(width, height);
     }
 
     /// Call when the phone switched networks, so calls move over at once.
@@ -492,15 +517,21 @@ impl Drop for SilentRoom {
     }
 }
 
+fn view_size(sizes: &ViewSizes, peer: PeerId, kind: VideoKind) -> Arc<ViewSize> {
+    let mut sizes = sizes.lock().unwrap();
+    sizes.entry((peer, kind)).or_default().clone()
+}
+
 async fn pump(
     peer: PeerId,
     kind: VideoKind,
     track: RtcVideoTrack,
+    view: Arc<ViewSize>,
     listener: Arc<dyn RoomListener>,
 ) {
-    let long_edge = match kind {
-        VideoKind::Camera => CAMERA_RENDER,
-        VideoKind::Screen => SCREEN_RENDER,
+    let (long_edge, fit) = match kind {
+        VideoKind::Camera => (CAMERA_RENDER, Fit::Cover),
+        VideoKind::Screen => (SCREEN_RENDER, Fit::Contain),
     };
     let screen = kind == VideoKind::Screen;
     let mut stream = NativeVideoStream::new(track);
@@ -510,7 +541,8 @@ async fn pump(
             continue;
         }
         last = Instant::now();
-        let Some(img) = silent_engine::render::to_rgba(&frame, long_edge, long_edge) else {
+        let (w, h) = view_box(&frame, view.get(), fit, (long_edge, long_edge));
+        let Some(img) = silent_engine::render::to_rgba(&frame, w, h) else {
             continue;
         };
         let listener = listener.clone();

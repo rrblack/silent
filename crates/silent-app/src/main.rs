@@ -15,6 +15,7 @@ use std::time::Duration;
 use silent_core::proto::MediaState;
 use silent_core::InviteCode;
 use silent_engine::libwebrtc::video_track::RtcVideoTrack;
+use silent_engine::render::{Fit, ViewSize};
 use silent_engine::{
     camera, capture, AudioDevice, AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Quality,
     Room, RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
@@ -39,7 +40,7 @@ struct Backend {
     generation: AtomicU64,
     pumps: Mutex<HashMap<String, JoinHandle<()>>>,
     /// How big each tile is shown, by tile key, for the pumps.
-    tile_sizes: Mutex<HashMap<String, Arc<video::TileSize>>>,
+    tile_sizes: Mutex<HashMap<String, Arc<ViewSize>>>,
     /// The computer's sound going out with the screen share, if chosen.
     computer_audio: Mutex<Option<computer_audio::ComputerAudio>>,
 }
@@ -73,7 +74,7 @@ fn tile_key(peer: PeerId, kind: VideoKind) -> String {
     }
 }
 
-fn tile_size(key: &str) -> Arc<video::TileSize> {
+fn tile_size(key: &str) -> Arc<ViewSize> {
     let mut sizes = backend().tile_sizes.lock().unwrap();
     sizes.entry(key.to_string()).or_default().clone()
 }
@@ -81,8 +82,8 @@ fn tile_size(key: &str) -> Arc<video::TileSize> {
 fn start_pump(peer: PeerId, kind: VideoKind, track: RtcVideoTrack) {
     let key = tile_key(peer, kind);
     let (max_w, max_h, fit) = match kind {
-        VideoKind::Camera => (1280, 720, video::Fit::Cover),
-        VideoKind::Screen => (1920, 1080, video::Fit::Contain),
+        VideoKind::Camera => (1280, 720, Fit::Cover),
+        VideoKind::Screen => (1920, 1080, Fit::Contain),
     };
     let ui_key = key.clone();
     let tile = tile_size(&key);

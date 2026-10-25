@@ -85,6 +85,7 @@ struct HomeView: View {
 
 struct RoomView: View {
     @ObservedObject var model: RoomModel
+    @Environment(\.displayScale) private var displayScale
     @State private var showChat = false
     @State private var showVerify = false
     @State private var showStats = false
@@ -170,6 +171,12 @@ struct RoomView: View {
         }
     }
 
+    private func reportSize(_ tile: Tile, _ size: CGSize) {
+        if case .friend(let friend, let screen) = tile {
+            model.setViewSize(friend: friend.id, screen: screen, size: size, scale: displayScale)
+        }
+    }
+
     @ViewBuilder
     private func tile(_ tile: Tile) -> some View {
         ZStack(alignment: .bottomLeading) {
@@ -204,6 +211,11 @@ struct RoomView: View {
             }
         }
         .aspectRatio(3 / 4, contentMode: .fit)
+        .background(GeometryReader { geo in
+            Color.clear
+                .onAppear { reportSize(tile, geo.size) }
+                .onChange(of: geo.size) { reportSize(tile, $0) }
+        })
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)

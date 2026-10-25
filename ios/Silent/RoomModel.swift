@@ -307,6 +307,13 @@ final class RoomModel: ObservableObject {
         room?.setFriendVolume(peer: peer, volume: Double(percent) / 100)
     }
 
+    /// How big a friend's camera or screen is shown, so frames come no larger.
+    func setViewSize(friend peer: UInt32, screen: Bool, size: CGSize, scale: CGFloat) {
+        let width = UInt32(max(0, (size.width * scale).rounded()))
+        let height = UInt32(max(0, (size.height * scale).rounded()))
+        room?.setViewSize(peer: peer, screen: screen, width: width, height: height)
+    }
+
     func flipCamera() {
         frontCamera.toggle()
         if cameraOn {

@@ -73,6 +73,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
@@ -389,6 +390,13 @@ private fun Tile(vm: RoomViewModel, camera: CameraFeed, tile: TileModel) {
                 if (speaking) 3.dp else 1.dp,
                 if (speaking) Palette.ok else Palette.border,
                 RoundedCornerShape(12.dp),
+            )
+            .then(
+                if (tile is TileModel.Remote) {
+                    Modifier.onSizeChanged { vm.setViewSize(tile.friend.id, screen, it.width, it.height) }
+                } else {
+                    Modifier
+                },
             )
             .then(
                 // Long press: mute or turn down a friend, for you only.

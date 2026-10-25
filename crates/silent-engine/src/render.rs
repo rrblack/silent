@@ -1,7 +1,74 @@
 //! Turns decoded frames into upright RGBA images for any UI toolkit.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use libwebrtc::prelude::*;
 use libwebrtc::video_frame::native::VideoFrameBufferExt;
+
+/// How big a video is shown, in physical pixels (0 until the UI lays it
+/// out). The UI sets it; the thread converting frames reads it.
+#[derive(Debug, Default)]
+pub struct ViewSize(AtomicU64);
+
+impl ViewSize {
+    pub fn set(&self, width: u32, height: u32) {
+        self.0.store(
+            u64::from(width) << 32 | u64::from(height),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn get(&self) -> (u32, u32) {
+        let v = self.0.load(Ordering::Relaxed);
+        ((v >> 32) as u32, v as u32)
+    }
+}
+
+/// How a picture fills its view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// Fills the view, cropping the edges (cameras).
+    Cover,
+    /// Shows all of it (screens).
+    Contain,
+}
+
+/// The box to pass to [`to_rgba`] so `frame` comes out just big enough for
+/// a `view` sized view: never larger than the picture or `max` (upright
+/// width and height), and `max` while the view size is unknown.
+pub fn view_box(frame: &BoxVideoFrame, view: (u32, u32), fit: Fit, max: (u32, u32)) -> (u32, u32) {
+    let buf = frame.buffer.as_ref();
+    let upright = if is_sideways(frame.rotation) {
+        (buf.height(), buf.width())
+    } else {
+        (buf.width(), buf.height())
+    };
+    fit_view(upright, view, fit, max)
+}
+
+fn fit_view(picture: (u32, u32), view: (u32, u32), fit: Fit, max: (u32, u32)) -> (u32, u32) {
+    if view.0 == 0 || view.1 == 0 {
+        return max;
+    }
+    let (pw, ph) = (f64::from(picture.0.max(1)), f64::from(picture.1.max(1)));
+    let (sx, sy) = (f64::from(view.0) / pw, f64::from(view.1) / ph);
+    let scale = match fit {
+        Fit::Cover => sx.max(sy),
+        Fit::Contain => sx.min(sy),
+    }
+    .min(1.0);
+    (
+        ((pw * scale).ceil() as u32).min(max.0),
+        ((ph * scale).ceil() as u32).min(max.1),
+    )
+}
+
+fn is_sideways(rotation: VideoRotation) -> bool {
+    matches!(
+        rotation,
+        VideoRotation::VideoRotation90 | VideoRotation::VideoRotation270
+    )
+}
 
 /// An upright RGBA image (R, G, B, A bytes per pixel, rows tightly packed).
 pub struct RgbaImage {
@@ -19,11 +86,7 @@ pub fn to_rgba(frame: &BoxVideoFrame, max_w: u32, max_h: u32) -> Option<RgbaImag
     if w < 2 || h < 2 {
         return None;
     }
-    let sideways = matches!(
-        frame.rotation,
-        VideoRotation::VideoRotation90 | VideoRotation::VideoRotation270
-    );
-    let (fit_w, fit_h) = if sideways {
+    let (fit_w, fit_h) = if is_sideways(frame.rotation) {
         (max_h, max_w)
     } else {
         (max_w, max_h)
@@ -130,6 +193,46 @@ mod tests {
 
     fn at(img: &RgbaImage, x: u32, y: u32) -> u8 {
         img.data[((y * img.width + x) * 4) as usize]
+    }
+
+    const MAX: (u32, u32) = (1280, 720);
+
+    #[test]
+    fn small_views_get_small_pictures() {
+        assert_eq!(
+            fit_view((1280, 720), (640, 360), Fit::Cover, MAX),
+            (640, 360)
+        );
+        // A wide view: cover keeps the width, contain the height.
+        assert_eq!(
+            fit_view((1280, 720), (640, 200), Fit::Cover, MAX),
+            (640, 360)
+        );
+        assert_eq!(
+            fit_view((1280, 720), (640, 200), Fit::Contain, MAX),
+            (356, 200)
+        );
+    }
+
+    #[test]
+    fn never_upscaled_or_over_the_cap() {
+        assert_eq!(
+            fit_view((640, 360), (1920, 1080), Fit::Cover, MAX),
+            (640, 360)
+        );
+        assert_eq!(fit_view((1920, 1080), (2560, 1440), Fit::Cover, MAX), MAX);
+    }
+
+    #[test]
+    fn unknown_view_uses_the_cap() {
+        assert_eq!(fit_view((1920, 1080), (0, 0), Fit::Cover, MAX), MAX);
+    }
+
+    #[test]
+    fn view_size_round_trips() {
+        let size = ViewSize::default();
+        size.set(1234, 567);
+        assert_eq!(size.get(), (1234, 567));
     }
 
     #[test]
