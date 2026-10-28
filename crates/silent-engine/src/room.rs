@@ -34,7 +34,8 @@ use libwebrtc::video_track::RtcVideoTrack;
 use silent_core::proto::{
     clean_file_name, clean_name, new_session_id, ChannelMsg, ClientMsg, FileFrame, IceConfig,
     Intent, MediaState, PeerFrame, RelayErrorCode, ServerMsg, Signal, CHAT_CHANNEL, FILE_CHANNEL,
-    FILE_CHUNK, MAX_CHAT_CHARS, MAX_FILE_BYTES, MAX_PEERS, PROTOCOL_VERSION,
+    FILE_CHUNK, JOIN_BURST, JOIN_REFILL_SECS, MAX_CHAT_CHARS, MAX_FILE_BYTES, MAX_PEERS,
+    PROTOCOL_VERSION,
 };
 use silent_core::{
     fingerprint_from_sdp, InviteCode, Opener, PairHandshake, PairKeys, PeerId, SealError, Sealer,
@@ -334,6 +335,7 @@ impl Room {
             levels_pending: false,
             camera_frame: None,
             evicted: false,
+            guesses: GuessBudget::new(),
             events: ev_tx,
             internal: int_tx,
         };
@@ -585,6 +587,44 @@ struct Peer {
     shown: Option<(u32, u32)>,
 }
 
+/// Key exchanges with people who haven't shown they hold the code yet.
+///
+/// Each one ends with our sealed `Hello`, which lets the other side check one
+/// guess of the code offline, even if they leave without a word. The relays
+/// budget join attempts per room, but a relay that makes up joiners would get
+/// as many guesses as it liked, so the room keeps the same budget itself
+/// (`JOIN_BURST`, then one every `JOIN_REFILL_SECS`). A friend who verifies
+/// gives their attempt back.
+struct GuessBudget {
+    left: f64,
+    at: Instant,
+}
+
+impl GuessBudget {
+    fn new() -> Self {
+        Self {
+            left: f64::from(JOIN_BURST),
+            at: Instant::now(),
+        }
+    }
+
+    fn take(&mut self) -> bool {
+        let now = Instant::now();
+        let refill = now.duration_since(self.at).as_secs_f64() / f64::from(JOIN_REFILL_SECS);
+        self.left = (self.left + refill).min(f64::from(JOIN_BURST));
+        self.at = now;
+        if self.left < 1.0 {
+            return false;
+        }
+        self.left -= 1.0;
+        true
+    }
+
+    fn give_back(&mut self) {
+        self.left = (self.left + 1.0).min(f64::from(JOIN_BURST));
+    }
+}
+
 /// Maps relay ids to the ids used in events. Relay ids can come back for a
 /// different person (after the relay restarts, or once a Worker room
 /// hibernates), and a friend who rejoins the relay gets a new one, so events
@@ -717,6 +757,7 @@ struct Actor {
     camera_frame: Option<(u32, u32)>,
     /// The relay removed us (see `RoomEvent::Removed`); don't rejoin.
     evicted: bool,
+    guesses: GuessBudget,
     events: mpsc::UnboundedSender<RoomEvent>,
     internal: mpsc::UnboundedSender<Internal>,
 }
@@ -842,6 +883,10 @@ impl Actor {
         // says otherwise doesn't get us to open connection after connection.
         let on_relay = self.peers.values().filter(|p| p.relay_id.is_some()).count();
         if on_relay + 1 >= MAX_PEERS {
+            return None;
+        }
+        if !self.guesses.take() {
+            tracing::debug!("key exchange budget used up; ignoring a joiner for now");
             return None;
         }
         let id = self.ids.assign(relay_id);
@@ -1087,6 +1132,7 @@ impl Actor {
                 } else {
                     CodecChoice::Default
                 });
+                self.guesses.give_back();
                 let replaces = self
                     .peers
                     .iter()

@@ -314,13 +314,19 @@ impl FileFrame {
     }
 }
 
+/// Characters that change the direction text is shown in. In a name they can
+/// make `photo\u{202E}gpj.exe` look like `photoexe.jpg`.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 /// A file name that is safe to show and to offer as a default when saving:
-/// no directories, no control characters, capped in length.
+/// no directories, no control or direction characters, capped in length.
 pub fn clean_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
     let cleaned: String = base
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_bidi_control(*c))
         .take(MAX_FILE_NAME_CHARS)
         .collect();
     let cleaned = cleaned.trim().trim_start_matches('.');
@@ -335,7 +341,7 @@ pub fn clean_file_name(name: &str) -> String {
 pub fn clean_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_bidi_control(*c))
         .take(MAX_NAME_CHARS)
         .collect();
     let cleaned = cleaned.trim();
@@ -430,6 +436,7 @@ mod tests {
         assert_eq!(clean_file_name("C:\\Users\\me\\cat.png"), "cat.png");
         assert_eq!(clean_file_name(".bashrc"), "bashrc");
         assert_eq!(clean_file_name("a\nb.txt"), "ab.txt");
+        assert_eq!(clean_file_name("photo\u{202E}gpj.exe"), "photogpj.exe");
         assert_eq!(clean_file_name(""), "file");
         assert_eq!(clean_file_name("/"), "file");
         assert_eq!(
@@ -443,6 +450,7 @@ mod tests {
         assert_eq!(clean_name("  Kyle \n"), "Kyle");
         assert_eq!(clean_name(""), "Friend");
         assert_eq!(clean_name(&"x".repeat(100)).chars().count(), MAX_NAME_CHARS);
+        assert_eq!(clean_name("Bob\u{202E}nimda"), "Bobnimda");
     }
 
     #[test]
