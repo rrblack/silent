@@ -131,3 +131,27 @@ pub async fn connect(
         },
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `wss://` relay needs a TLS crypto provider. Without one rustls
+    /// panics inside the connect task and the app waits forever.
+    #[tokio::test]
+    async fn tls_relay_fails_cleanly() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            // Accept and hang up, so the TLS handshake starts and fails.
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        let url = format!("https://127.0.0.1:{port}");
+        let result = tokio::spawn(async move { connect(&url, 1234, Intent::Create).await })
+            .await
+            .expect("connect must not panic");
+        assert!(matches!(result, Err(SignalError::Connect(_))));
+    }
+}

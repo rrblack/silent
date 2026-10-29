@@ -17,6 +17,8 @@ futures-util.workspace = true
 tracing.workspace = true
 libwebrtc = "=0.3.52"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+# tokio-tungstenite enables no crypto provider; without one a wss:// relay panics.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
 nokhwa = { version = "0.10.11", features = ["input-native"] }

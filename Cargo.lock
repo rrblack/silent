@@ -5541,6 +5541,7 @@ dependencies = [
  "libwebrtc",
  "nokhwa",
  "pkg-config",
+ "rustls",
  "serde_json",
  "silent-core",
  "silent-relay",
