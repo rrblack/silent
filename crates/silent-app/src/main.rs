@@ -1170,10 +1170,18 @@ fn main() -> anyhow::Result<()> {
                 title: "Choose with the system picker…".into(),
             });
         }
-        for s in capture::list_sources(capture::SourceKind::Screen) {
+        // Windows gives screens no title, so number them.
+        for (n, s) in capture::list_sources(capture::SourceKind::Screen)
+            .into_iter()
+            .enumerate()
+        {
+            let title = match s.title.trim() {
+                "" => format!("Screen {}", n + 1),
+                t => format!("Screen {}: {t}", n + 1),
+            };
             sources.push(SourceItem {
                 id: format!("s:{}", s.id).into(),
-                title: format!("Screen: {}", s.title).into(),
+                title: title.into(),
             });
         }
         for s in capture::list_sources(capture::SourceKind::Window) {
