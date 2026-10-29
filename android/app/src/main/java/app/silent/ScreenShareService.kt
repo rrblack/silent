@@ -48,7 +48,7 @@ class ScreenShareService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = Notification.Builder(this, SilentApp.CALL_CHANNEL)
-            .setSmallIcon(R.drawable.ic_silent)
+            .setSmallIcon(R.drawable.ic_silent_mono)
             .setContentTitle("Sharing your screen")
             .setContentText("Only people in your Silent room can see it.")
             .setOngoing(true)

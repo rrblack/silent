@@ -60,7 +60,7 @@ class CallService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
         fun action(name: String, label: String) = Notification.Action.Builder(
-            Icon.createWithResource(this, R.drawable.ic_silent),
+            Icon.createWithResource(this, R.drawable.ic_silent_mono),
             label,
             PendingIntent.getService(
                 this, name.hashCode(), Intent(this, CallService::class.java).setAction(name),
@@ -69,7 +69,7 @@ class CallService : Service() {
         ).build()
         val muted = ActiveCall.controls?.micOn == false
         return Notification.Builder(this, SilentApp.CALL_CHANNEL)
-            .setSmallIcon(R.drawable.ic_silent)
+            .setSmallIcon(R.drawable.ic_silent_mono)
             .setContentTitle(if (muted) "In a Silent room · muted" else "In a Silent room")
             .setContentText("End-to-end encrypted. Tap to return.")
             .setContentIntent(open)
