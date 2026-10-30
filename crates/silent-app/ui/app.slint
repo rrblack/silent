@@ -290,33 +290,15 @@ component VideoTile inherits Rectangle {
     }
 }
 
-component DevicePickers inherits VerticalLayout {
-    in property <[string]> microphones;
-    in property <[string]> speakers;
-    in property <[string]> cameras;
-    in-out property <int> microphone;
-    in-out property <int> speaker;
-    in-out property <int> camera;
-    callback changed;
-    spacing: 10px;
-    Text { text: "Microphone"; color: Palette.subtext; font-size: 12px; }
-    ComboBox {
-        model: root.microphones;
-        current-index <=> root.microphone;
-        selected => { root.changed(); }
-    }
-    Text { text: "Speaker"; color: Palette.subtext; font-size: 12px; }
-    ComboBox {
-        model: root.speakers;
-        current-index <=> root.speaker;
-        selected => { root.changed(); }
-    }
-    Text { text: "Camera"; color: Palette.subtext; font-size: 12px; }
-    ComboBox {
-        model: root.cameras;
-        current-index <=> root.camera;
-        selected => { root.changed(); }
-    }
+component SectionTitle inherits Text {
+    color: Palette.text;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+component FieldLabel inherits Text {
+    color: Palette.subtext;
+    font-size: 12px;
 }
 
 component Home inherits Rectangle {
@@ -324,23 +306,9 @@ component Home inherits Rectangle {
     in-out property <string> join-code;
     in property <string> error;
     in property <bool> busy;
-    in-out property <int> camera-quality;
-    in-out property <int> screen-quality;
-    in-out property <bool> relay-only;
-    in-out property <bool> push-to-talk;
-    in-out property <bool> sounds;
-    in-out property <string> relay-url;
-    in property <[string]> microphones;
-    in property <[string]> speakers;
-    in property <[string]> cameras;
-    in-out property <int> microphone;
-    in-out property <int> speaker;
-    in-out property <int> camera;
-    property <bool> show-settings: false;
     callback create-room;
     callback join-room;
-    callback devices-requested;
-    callback devices-changed;
+    callback show-settings;
 
     background: Palette.bg;
 
@@ -414,55 +382,13 @@ component Home inherits Rectangle {
                 }
 
                 Text {
-                    text: root.show-settings ? "Hide settings" : "Settings";
+                    text: "Settings";
                     color: Palette.accent;
                     font-size: 13px;
                     horizontal-alignment: center;
                     TouchArea {
                         mouse-cursor: pointer;
-                        clicked => {
-                            root.show-settings = !root.show-settings;
-                            if (root.show-settings) {
-                                root.devices-requested();
-                            }
-                        }
-                    }
-                }
-
-                if root.show-settings: VerticalLayout {
-                    spacing: 10px;
-                    Text { text: "Camera quality"; color: Palette.subtext; font-size: 12px; }
-                    ComboBox {
-                        model: ["Standard (720p, 30 fps)", "High (1080p, 60 fps)"];
-                        current-index <=> root.camera-quality;
-                    }
-                    Text { text: "Screen share"; color: Palette.subtext; font-size: 12px; }
-                    ComboBox {
-                        model: ["Motion: games and video (1080p, 60 fps)", "Detail: code and documents (1440p, 30 fps)"];
-                        current-index <=> root.screen-quality;
-                    }
-                    CheckBox {
-                        text: "Hide my IP from friends (relay all media)";
-                        checked <=> root.relay-only;
-                    }
-                    CheckBox {
-                        text: "Push to talk: hold Space to speak";
-                        checked <=> root.push-to-talk;
-                    }
-                    CheckBox {
-                        text: "Play a sound when friends join or leave";
-                        checked <=> root.sounds;
-                    }
-                    Text { text: "Relay server"; color: Palette.subtext; font-size: 12px; }
-                    LineEdit { text <=> root.relay-url; }
-                    DevicePickers {
-                        microphones: root.microphones;
-                        speakers: root.speakers;
-                        cameras: root.cameras;
-                        microphone <=> root.microphone;
-                        speaker <=> root.speaker;
-                        camera <=> root.camera;
-                        changed => { root.devices-changed(); }
+                        clicked => { root.show-settings(); }
                     }
                 }
             }
@@ -501,7 +427,7 @@ component Room inherits Rectangle {
     callback save-file(string);
     callback show-verify;
     callback show-stats;
-    callback show-devices;
+    callback show-settings;
 
     background: Palette.bg;
 
@@ -558,8 +484,8 @@ component Room inherits Rectangle {
             }
             PillButton {
                 y: 8px;
-                label: "Devices";
-                clicked => { root.show-devices(); }
+                label: "Settings";
+                clicked => { root.show-settings(); }
             }
             PillButton {
                 y: 8px;
@@ -784,7 +710,13 @@ export component AppWindow inherits Window {
     in-out property <bool> verify-open: false;
     in-out property <bool> stats-open: false;
     in property <[string]> stats-lines;
-    in-out property <bool> devices-open: false;
+    in-out property <bool> settings-open: false;
+    /// The chosen microphone's level for the meter in Settings, 0 to 1.
+    in property <float> mic-level;
+    in property <image> camera-preview;
+    in property <bool> has-camera-preview;
+    /// Shown in place of the camera preview: why there is none yet.
+    in property <string> camera-status;
     in property <[string]> microphones: ["System default"];
     in property <[string]> speakers: ["System default"];
     in property <[string]> cameras: ["First camera"];
@@ -811,30 +743,22 @@ export component AppWindow inherits Window {
     callback unfocus-tile;
     callback confirm-words(int);
     callback push-to-talk-held(bool);
-    callback devices-requested;
+    callback settings-opened;
+    callback settings-closed;
     callback devices-changed;
+    callback test-speaker;
 
     if root.screen == "home": Home {
         name <=> root.name;
         join-code <=> root.join-code;
         error: root.home-error;
         busy: root.busy;
-        camera-quality <=> root.camera-quality;
-        screen-quality <=> root.screen-quality;
-        relay-only <=> root.relay-only;
-        push-to-talk <=> root.push-to-talk;
-        sounds <=> root.sounds;
-        relay-url <=> root.relay-url;
-        microphones: root.microphones;
-        speakers: root.speakers;
-        cameras: root.cameras;
-        microphone <=> root.microphone;
-        speaker <=> root.speaker;
-        camera <=> root.camera;
         create-room => { root.create-room(); }
         join-room => { root.join-room(); }
-        devices-requested => { root.devices-requested(); }
-        devices-changed => { root.devices-changed(); }
+        show-settings => {
+            root.settings-open = true;
+            root.settings-opened();
+        }
     }
 
     if root.screen == "room": keys := FocusScope {
@@ -852,7 +776,7 @@ export component AppWindow inherits Window {
             root.full-screen = !root.full-screen;
             return accept;
         }
-        if (event.text == Key.Escape && !root.picker-open && !root.verify-open && !root.stats-open && !root.devices-open) {
+        if (event.text == Key.Escape && !root.picker-open && !root.verify-open && !root.stats-open && !root.settings-open) {
             if (root.full-screen) {
                 root.full-screen = false;
                 return accept;
@@ -913,9 +837,9 @@ export component AppWindow inherits Window {
         send-file => { root.send-file(); }
         save-file(id) => { root.save-file(id); }
         show-verify => { root.verify-open = true; }
-        show-devices => {
-            root.devices-open = true;
-            root.devices-requested();
+        show-settings => {
+            root.settings-open = true;
+            root.settings-opened();
         }
         show-stats => {
             root.stats-open = true;
@@ -1028,20 +952,127 @@ export component AppWindow inherits Window {
         PillButton { label: "Done"; clicked => { root.verify-open = false; } }
     }
 
-    if root.devices-open: Sheet {
-        title: "Devices";
-        subtitle: "Switching takes effect right away.";
-        close => { root.devices-open = false; }
-        DevicePickers {
-            microphones: root.microphones;
-            speakers: root.speakers;
-            cameras: root.cameras;
-            microphone <=> root.microphone;
-            speaker <=> root.speaker;
-            camera <=> root.camera;
-            changed => { root.devices-changed(); }
+    if root.settings-open: Sheet {
+        card-max-width: 560px;
+        title: "Settings";
+        subtitle: "Device changes apply right away. Nothing is saved when Silent closes.";
+        close => {
+            root.settings-open = false;
+            root.settings-closed();
         }
-        PillButton { label: "Done"; clicked => { root.devices-open = false; } }
+        settings := ScrollView {
+            min-height: min(body.preferred-height, root.height - 230px);
+            content-height: body.preferred-height;
+            body := VerticalLayout {
+                x: 0;
+                width: settings.visible-width - 14px;
+                height: self.preferred-height;
+                spacing: 10px;
+
+                SectionTitle { text: "Microphone"; }
+                ComboBox {
+                    model: root.microphones;
+                    current-index <=> root.microphone;
+                    selected => { root.devices-changed(); }
+                }
+                Rectangle {
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Palette.card;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * root.mic-level;
+                        border-radius: 4px;
+                        background: root.mic-level > 0.92 ? Palette.accent : Palette.ok;
+                        animate width { duration: 80ms; }
+                    }
+                }
+                FieldLabel { text: "Talk and the bar should move. If it doesn't, pick another microphone."; wrap: word-wrap; }
+
+                Rectangle { height: 6px; }
+                SectionTitle { text: "Speaker"; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: root.speakers;
+                        current-index <=> root.speaker;
+                        selected => { root.devices-changed(); }
+                    }
+                    PillButton { label: "Play test sound"; clicked => { root.test-speaker(); } }
+                }
+
+                Rectangle { height: 6px; }
+                SectionTitle { text: "Camera"; }
+                ComboBox {
+                    model: root.cameras;
+                    current-index <=> root.camera;
+                    selected => { root.devices-changed(); }
+                }
+                Rectangle {
+                    height: root.has-camera-preview ? self.width * 9 / 16 : 90px;
+                    border-radius: 8px;
+                    background: Palette.bg;
+                    clip: true;
+                    if root.has-camera-preview: Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.camera-preview;
+                        image-fit: contain;
+                    }
+                    if !root.has-camera-preview: Text {
+                        text: root.camera-status;
+                        color: Palette.subtext;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.screen != "room": FieldLabel { text: "Camera quality"; }
+                if root.screen != "room": ComboBox {
+                    model: ["Standard (720p, 30 fps)", "High (1080p, 60 fps)"];
+                    current-index <=> root.camera-quality;
+                }
+
+                if root.screen != "room": Rectangle { height: 6px; }
+                if root.screen != "room": SectionTitle { text: "Screen share"; }
+                if root.screen != "room": ComboBox {
+                    model: ["Motion: games and video (1080p, 60 fps)", "Detail: code and documents (1440p, 30 fps)"];
+                    current-index <=> root.screen-quality;
+                }
+
+                Rectangle { height: 6px; }
+                SectionTitle { text: "Calls"; }
+                if root.screen != "room": CheckBox {
+                    text: "Push to talk: hold Space to speak";
+                    checked <=> root.push-to-talk;
+                }
+                CheckBox {
+                    text: "Play a sound when friends join or leave";
+                    checked <=> root.sounds;
+                }
+
+                if root.screen != "room": Rectangle { height: 6px; }
+                if root.screen != "room": SectionTitle { text: "Privacy and network"; }
+                if root.screen != "room": CheckBox {
+                    text: "Hide my IP from friends (relay all media)";
+                    checked <=> root.relay-only;
+                }
+                if root.screen != "room": FieldLabel { text: "Relay server"; }
+                if root.screen != "room": LineEdit { text <=> root.relay-url; }
+                if root.screen == "room": FieldLabel {
+                    text: "Quality, push to talk and network settings can be changed between calls.";
+                    wrap: word-wrap;
+                }
+            }
+        }
+        PillButton {
+            label: "Done";
+            clicked => {
+                root.settings-open = false;
+                root.settings-closed();
+            }
+        }
     }
 
     if root.stats-open: Sheet {

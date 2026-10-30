@@ -2,13 +2,14 @@
 
 mod computer_audio;
 mod files;
+mod meter;
 mod sounds;
 mod video;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -159,6 +160,7 @@ struct UiState {
 thread_local! {
     static UI: RefCell<Option<UiState>> = const { RefCell::new(None) };
     static DEVICES: RefCell<Devices> = RefCell::new(Devices::default());
+    static TRY_OUT: RefCell<Option<TryOut>> = const { RefCell::new(None) };
 }
 
 /// The devices the pickers list, after their first "default" entry, and the
@@ -186,6 +188,154 @@ impl Devices {
                 .map(|c| CameraTarget::Device(c.index)),
         }
     }
+
+    /// The chosen microphone's name, for sound outside the call.
+    fn microphone_name(&self) -> Option<String> {
+        let id = self.microphone.as_ref()?;
+        self.microphones
+            .iter()
+            .find(|m| &m.id == id)
+            .map(|m| m.name.clone())
+    }
+
+    /// The chosen speaker's name, for sound outside the call.
+    fn speaker_name(&self) -> Option<String> {
+        let id = self.speaker.as_ref()?;
+        self.speakers
+            .iter()
+            .find(|s| &s.id == id)
+            .map(|s| s.name.clone())
+    }
+}
+
+/// The microphone meter and camera preview while Settings is open.
+struct TryOut {
+    meter: meter::Meter,
+    /// Moves the meter; held so it keeps running.
+    _timer: slint::Timer,
+    camera: Option<Arc<AtomicBool>>,
+}
+
+impl Drop for TryOut {
+    fn drop(&mut self) {
+        if let Some(stop) = &self.camera {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+const CAMERA_PREVIEW_WIDTH: u32 = 640;
+const CAMERA_PREVIEW_HEIGHT: u32 = 360;
+const CAMERA_PREVIEW_FPS: u32 = 24;
+
+/// Starts (or restarts, after a device change) the microphone meter and
+/// camera preview on the devices chosen in Settings. The camera is left alone
+/// while it is on in a call: the call has it open.
+fn start_try_out(window: &AppWindow) {
+    stop_try_out(window);
+    let (microphone, target) = DEVICES.with(|d| {
+        let d = d.borrow();
+        (d.microphone_name(), d.camera_target())
+    });
+    let meter = meter::Meter::start(microphone);
+    let timer = slint::Timer::default();
+    let weak = window.as_weak();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(50),
+        move || {
+            let Some(w) = weak.upgrade() else { return };
+            let level = TRY_OUT.with(|t| t.borrow().as_ref().map_or(0.0, |t| t.meter.take_level()));
+            // Falls back slowly so speech reads as a steady bar.
+            w.set_mic_level(level.max(w.get_mic_level() - 0.05));
+        },
+    );
+    let camera_in_call = UI.with(|c| c.borrow().as_ref().is_some_and(|s| s.local.camera));
+    let camera = match target {
+        _ if camera_in_call => {
+            window.set_camera_status("Your camera is on in this call.".into());
+            None
+        }
+        None => {
+            window.set_camera_status("No camera found.".into());
+            None
+        }
+        Some(CameraTarget::Device(index)) => {
+            window.set_camera_status("Starting camera…".into());
+            Some(preview_camera(window.as_weak(), index))
+        }
+        Some(_) => {
+            window.set_camera_status("Test pattern (diagnostics).".into());
+            None
+        }
+    };
+    TRY_OUT.with(|t| {
+        *t.borrow_mut() = Some(TryOut {
+            meter,
+            _timer: timer,
+            camera,
+        })
+    });
+}
+
+fn stop_try_out(window: &AppWindow) {
+    TRY_OUT.with(|t| t.borrow_mut().take());
+    window.set_mic_level(0.0);
+    window.set_has_camera_preview(false);
+    window.set_camera_preview(Image::default());
+}
+
+/// Shows camera `index` in Settings until the returned flag is set. At most
+/// one frame waits for the UI at a time; newer ones are dropped meanwhile.
+fn preview_camera(window: slint::Weak<AppWindow>, index: u32) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let waiting = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let _ = std::thread::Builder::new()
+        .name("camera preview".into())
+        .spawn(move || {
+            let failed = window.clone();
+            let shown = flag.clone();
+            camera::preview(
+                index,
+                CAMERA_PREVIEW_WIDTH,
+                CAMERA_PREVIEW_HEIGHT,
+                CAMERA_PREVIEW_FPS,
+                flag.clone(),
+                |frame| {
+                    if waiting.swap(true, Ordering::AcqRel) {
+                        return;
+                    }
+                    let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                        &frame.rgba,
+                        frame.width,
+                        frame.height,
+                    );
+                    let waiting = waiting.clone();
+                    let shown = shown.clone();
+                    let _ = window.upgrade_in_event_loop(move |w| {
+                        waiting.store(false, Ordering::Release);
+                        if !shown.load(Ordering::Relaxed) {
+                            w.set_camera_preview(Image::from_rgba8(pixels));
+                            w.set_has_camera_preview(true);
+                        }
+                    });
+                },
+                move |e| {
+                    tracing::debug!("camera preview: {e}");
+                    let stopped = flag.clone();
+                    let _ = failed.upgrade_in_event_loop(move |w| {
+                        if !stopped.load(Ordering::Relaxed) {
+                            w.set_has_camera_preview(false);
+                            w.set_camera_status(
+                                "Couldn't open this camera. Another app may be using it.".into(),
+                            );
+                        }
+                    });
+                },
+            );
+        });
+    stop
 }
 
 /// Lists devices off the UI thread (opening the audio module can take a
@@ -482,15 +632,7 @@ impl UiState {
     /// Plays `chime` unless sounds are off in Settings.
     fn chime(&self, chime: sounds::Chime) {
         if self.window.upgrade().is_some_and(|w| w.get_sounds()) {
-            let speaker = DEVICES.with(|d| {
-                let d = d.borrow();
-                let id = d.speaker.as_ref()?;
-                d.speakers
-                    .iter()
-                    .find(|s| &s.id == id)
-                    .map(|s| s.name.clone())
-            });
-            sounds::play(chime, speaker);
+            sounds::play(chime, DEVICES.with(|d| d.borrow().speaker_name()));
         }
     }
 
@@ -1046,7 +1188,8 @@ fn leave_room(error: Option<&str>) {
         w.set_focus_index(-1);
         w.set_picker_open(false);
         w.set_verify_open(false);
-        w.set_devices_open(false);
+        w.set_settings_open(false);
+        stop_try_out(&w);
         w.set_stats_open(false);
         w.set_notice("".into());
         w.set_draft("".into());
@@ -1295,13 +1438,35 @@ fn main() -> anyhow::Result<()> {
     window.on_leave(|| leave_room(None));
 
     let weak = window.as_weak();
-    window.on_devices_requested(move || refresh_devices(weak.clone()));
+    window.on_settings_opened(move || {
+        if let Some(w) = weak.upgrade() {
+            refresh_devices(weak.clone());
+            start_try_out(&w);
+        }
+    });
+
+    let weak = window.as_weak();
+    window.on_settings_closed(move || {
+        if let Some(w) = weak.upgrade() {
+            stop_try_out(&w);
+        }
+    });
 
     let weak = window.as_weak();
     window.on_devices_changed(move || {
         if let Some(w) = weak.upgrade() {
             apply_devices(&w);
+            if w.get_settings_open() {
+                start_try_out(&w);
+            }
         }
+    });
+
+    window.on_test_speaker(|| {
+        sounds::play(
+            sounds::Chime::Test,
+            DEVICES.with(|d| d.borrow().speaker_name()),
+        );
     });
 
     window.on_push_to_talk_held(|held| {
