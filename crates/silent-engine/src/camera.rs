@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use libwebrtc::native::yuv_helper;
 use libwebrtc::prelude::*;
@@ -13,6 +14,7 @@ use nokhwa::utils::{
 };
 use nokhwa::Camera;
 
+use crate::capture::{box_filter, Thumbnail};
 use crate::media::{fit, push_i420, Encoding, Source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +54,70 @@ pub fn request_permission(on_done: impl Fn(bool) + Send + Sync + 'static) {
     {
         on_done(true);
     }
+}
+
+/// Shows camera `index` without a call, for the settings page: until `stop`
+/// is set, hands about `fps` frames a second to `on_frame`, shrunk to fit
+/// `max_width` x `max_height`. Blocks; run it on its own thread.
+pub fn preview(
+    index: u32,
+    max_width: u32,
+    max_height: u32,
+    fps: u32,
+    stop: Arc<AtomicBool>,
+    mut on_frame: impl FnMut(Thumbnail),
+    on_fatal: impl Fn(String),
+) {
+    let wanted = CameraFormat::new(Resolution::new(640, 360), FrameFormat::MJPEG, 30);
+    let format = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(wanted));
+    let mut camera = match Camera::new(CameraIndex::Index(index), format) {
+        Ok(c) => c,
+        Err(e) => return on_fatal(format!("could not open camera: {e}")),
+    };
+    if let Err(e) = camera.open_stream() {
+        return on_fatal(format!("could not start camera: {e}"));
+    }
+    let every = Duration::from_secs(1) / fps.max(1);
+    let mut last: Option<Instant> = None;
+    let mut rgba = Vec::new();
+    let mut failures = 0;
+    while !stop.load(Ordering::Relaxed) {
+        let frame = match camera.frame() {
+            Ok(f) => f,
+            Err(e) => {
+                failures += 1;
+                if failures > 30 {
+                    on_fatal(format!("camera stopped: {e}"));
+                    break;
+                }
+                continue;
+            }
+        };
+        failures = 0;
+        if last.is_some_and(|at| at.elapsed() < every) {
+            continue;
+        }
+        let res = frame.resolution();
+        let (w, h) = (res.width_x, res.height_y);
+        if w < 2 || h < 2 {
+            continue;
+        }
+        rgba.resize((w * h * 4) as usize, 0);
+        if frame
+            .decode_image_to_buffer::<RgbAFormat>(&mut rgba)
+            .is_err()
+        {
+            continue;
+        }
+        last = Some(Instant::now());
+        let (tw, th) = fit(w, h, max_width, max_height);
+        on_frame(Thumbnail {
+            width: tw,
+            height: th,
+            rgba: box_filter(&rgba, (w * 4) as usize, w, h, tw, th, false),
+        });
+    }
+    let _ = camera.stop_stream();
 }
 
 pub(crate) fn run(

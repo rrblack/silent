@@ -1,6 +1,7 @@
-//! Short chimes when a friend joins or leaves. They are synthesized here and
-//! played apart from the call audio: on the speaker chosen in the app when
-//! the sound system knows it by the same name, else the default one.
+//! Short chimes when a friend joins or leaves, and the speaker test in
+//! Settings. They are synthesized here and played apart from the call audio:
+//! on the speaker chosen in the app when the sound system knows it by the
+//! same name, else the default one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,8 @@ use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 pub enum Chime {
     Joined,
     Left,
+    /// "Play test sound" in Settings.
+    Test,
 }
 
 impl Chime {
@@ -24,6 +27,7 @@ impl Chime {
         match self {
             Chime::Joined => [(659.3, 0.0), (880.0, 0.09)],
             Chime::Left => [(880.0, 0.0), (587.3, 0.09)],
+            Chime::Test => [(523.3, 0.0), (784.0, 0.09)],
         }
     }
 }
@@ -144,7 +148,7 @@ mod tests {
 
     #[test]
     fn chimes_are_short_and_never_clip() {
-        for chime in [Chime::Joined, Chime::Left] {
+        for chime in [Chime::Joined, Chime::Left, Chime::Test] {
             let samples = render(chime, 48_000.0);
             assert_eq!(samples.len(), (LENGTH * 48_000.0) as usize);
             let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
