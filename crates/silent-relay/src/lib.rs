@@ -6,11 +6,12 @@
 //! candidates: those are sealed with keys only the peers hold.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -30,6 +31,11 @@ const RATE_BURST: f64 = 200.0;
 const RATE_PER_SEC: f64 = 50.0;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Room connections one address may open: a burst, then one every
+/// `CONNECT_REFILL_SECS`. Keeps one machine from holding every room number.
+/// Same budget as the Worker.
+const CONNECT_BURST: f64 = 60.0;
+const CONNECT_REFILL_SECS: f64 = 2.0;
 
 #[derive(Clone, Default)]
 pub struct RelayConfig {
@@ -136,9 +142,53 @@ impl Room {
     }
 }
 
+/// Per-address connection budgets, in memory only. An address drops out
+/// once its budget has refilled, so nothing outlives a quiet minute or two.
+#[derive(Default)]
+struct ConnectBudget {
+    by_addr: HashMap<IpAddr, (f64, Instant)>,
+}
+
+impl ConnectBudget {
+    fn take(&mut self, ip: IpAddr, now: Instant) -> bool {
+        // The desktop app hosts this relay on loopback for itself.
+        if ip.is_loopback() {
+            return true;
+        }
+        let refilled = |left: f64, at: Instant| {
+            (left + now.duration_since(at).as_secs_f64() / CONNECT_REFILL_SECS).min(CONNECT_BURST)
+        };
+        self.by_addr
+            .retain(|_, (left, at)| refilled(*left, *at) < CONNECT_BURST);
+        let key = budget_key(ip);
+        let left = self
+            .by_addr
+            .get(&key)
+            .map_or(CONNECT_BURST, |(left, at)| refilled(*left, *at));
+        if left < 1.0 {
+            return false;
+        }
+        self.by_addr.insert(key, (left - 1.0, now));
+        true
+    }
+}
+
+/// An IPv6 user usually holds a whole /64, so it counts as one address.
+fn budget_key(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => {
+            let mut octets = v6.octets();
+            octets[8..].fill(0);
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
+        v4 => v4,
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     rooms: Arc<Mutex<HashMap<u16, Room>>>,
+    connects: Arc<Mutex<ConnectBudget>>,
     config: Arc<RelayConfig>,
 }
 
@@ -149,9 +199,10 @@ struct Admitted {
     kicked: watch::Receiver<Option<Kick>>,
 }
 
-pub fn router(config: RelayConfig) -> Router {
+fn router(config: RelayConfig) -> Router {
     let state = AppState {
         rooms: Arc::default(),
+        connects: Arc::default(),
         config: Arc::new(config),
     };
     Router::new()
@@ -161,15 +212,21 @@ pub fn router(config: RelayConfig) -> Router {
 }
 
 pub async fn serve(listener: TcpListener, config: RelayConfig) -> std::io::Result<()> {
-    axum::serve(listener, router(config)).await
+    axum::serve(
+        listener,
+        router(config).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
 
 async fn room(
     ws: WebSocketUpgrade,
     Path(nameplate): Path<String>,
     Query(query): Query<HashMap<String, String>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> Response {
+    let allowed = state.connects.lock().await.take(addr.ip(), Instant::now());
     let nameplate = nameplate
         .parse::<u16>()
         .ok()
@@ -178,6 +235,7 @@ async fn room(
     ws.max_message_size(MAX_RELAY_DATA + 1024)
         .on_upgrade(move |socket| async move {
             match (nameplate, intent) {
+                _ if !allowed => reject(socket, RelayErrorCode::RateLimited).await,
                 (Some(n), Some(i)) => run_peer(socket, state, n, i).await,
                 _ => reject(socket, RelayErrorCode::BadRequest).await,
             }
@@ -362,4 +420,47 @@ async fn run_peer(socket: WebSocket, state: AppState, nameplate: u16, intent: In
         writer.abort();
     }
     tracing::debug!(room = nameplate, peer = me, ?error, "left");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connections_are_budgeted_per_address() {
+        let mut budget = ConnectBudget::default();
+        let start = Instant::now();
+        let a: IpAddr = "192.0.2.1".parse().unwrap();
+        for _ in 0..CONNECT_BURST as usize {
+            assert!(budget.take(a, start));
+        }
+        assert!(!budget.take(a, start));
+        assert!(budget.take("192.0.2.2".parse().unwrap(), start));
+        let later = start + Duration::from_secs_f64(CONNECT_REFILL_SECS);
+        assert!(budget.take(a, later));
+        assert!(!budget.take(a, later));
+    }
+
+    #[test]
+    fn an_ipv6_slash_64_shares_one_budget() {
+        let mut budget = ConnectBudget::default();
+        let now = Instant::now();
+        for i in 0..CONNECT_BURST as u32 {
+            let ip: IpAddr = format!("2001:db8:1:2::{i:x}").parse().unwrap();
+            assert!(budget.take(ip, now));
+        }
+        assert!(!budget.take("2001:db8:1:2:ffff::1".parse().unwrap(), now));
+        assert!(budget.take("2001:db8:1:3::1".parse().unwrap(), now));
+    }
+
+    #[test]
+    fn loopback_is_not_budgeted() {
+        let mut budget = ConnectBudget::default();
+        let now = Instant::now();
+        for _ in 0..2 * CONNECT_BURST as usize {
+            assert!(budget.take("127.0.0.1".parse().unwrap(), now));
+            assert!(budget.take("::1".parse().unwrap(), now));
+        }
+        assert!(budget.by_addr.is_empty());
+    }
 }

@@ -19,6 +19,11 @@ const RATE_PER_SEC = 50;
 // silent-core's JOIN_BURST / JOIN_REFILL_SECS.
 const JOIN_BURST = 20;
 const JOIN_REFILL_SECS = 6;
+// Room connections one address may open: a burst, then one every
+// CONNECT_REFILL_SECS. Keeps one machine from holding every room number.
+// Same budget as crates/silent-relay.
+const CONNECT_BURST = 60;
+const CONNECT_REFILL_SECS = 2;
 const TURN_TTL_SECONDS = 4 * 60 * 60;
 const TURN_CAP_GB_DEFAULT = 900;
 const TURN_WINDOW_DAYS = 31;
@@ -47,6 +52,7 @@ interface IceConfig {
 
 interface Env {
   ROOMS: DurableObjectNamespace<Room>;
+  GATES: DurableObjectNamespace<Gate>;
   TURN_KEY_ID?: string;
   TURN_KEY_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
@@ -79,6 +85,22 @@ function rejectSocket(code: ErrorCode): Response {
   server.send(JSON.stringify({ t: "error", code }));
   server.close(1008, code);
   return new Response(null, { status: 101, webSocket: client });
+}
+
+// The address a connection's budget is kept under, hashed so no IP address
+// appears in a Durable Object name. An IPv6 user usually holds a whole /64,
+// so it counts as one address.
+async function budgetKey(ip: string): Promise<string> {
+  let key = ip;
+  if (ip.includes(":")) {
+    const [head, tail = ""] = ip.split("::");
+    const left = head ? head.split(":") : [];
+    const right = tail ? tail.split(":") : [];
+    const groups = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+    key = groups.slice(0, 4).map((g) => parseInt(g, 16)).join(":") + "::/64";
+  }
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("silent-gate:" + key));
+  return [...new Uint8Array(digest).slice(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 let usageCheck: { at: number; underCap: boolean } | undefined;
@@ -173,6 +195,13 @@ export default {
       return rejectSocket("bad_request");
     }
 
+    // Only `wrangler dev` sees loopback; the relay tests open many rooms.
+    const ip = request.headers.get("CF-Connecting-IP");
+    if (ip && ip !== "::1" && !ip.startsWith("127.")) {
+      const gate = env.GATES.get(env.GATES.idFromName(await budgetKey(ip)));
+      if (!(await gate.take())) return rejectSocket("rate_limited");
+    }
+
     const ice = await iceConfig(env);
     const headers = new Headers(request.headers);
     headers.set("x-silent-intent", intent);
@@ -181,6 +210,22 @@ export default {
     return stub.fetch(new Request(request.url, { headers }));
   },
 } satisfies ExportedHandler<Env>;
+
+// One per address: its connection budget, in memory only. When Cloudflare
+// evicts an idle Gate the budget starts full again.
+export class Gate extends DurableObject<Env> {
+  private left = CONNECT_BURST;
+  private at = Date.now();
+
+  async take(): Promise<boolean> {
+    const now = Date.now();
+    this.left = Math.min(CONNECT_BURST, this.left + (now - this.at) / 1000 / CONNECT_REFILL_SECS);
+    this.at = now;
+    if (this.left < 1) return false;
+    this.left -= 1;
+    return true;
+  }
+}
 
 export class Room extends DurableObject<Env> {
   private nextId = 0;

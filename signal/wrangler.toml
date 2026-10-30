@@ -10,9 +10,17 @@ enabled = false
 name = "ROOMS"
 class_name = "Room"
 
+[[durable_objects.bindings]]
+name = "GATES"
+class_name = "Gate"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Gate"]
 
 # Optional, for TURN relay credentials (Cloudflare Realtime TURN):
 #   wrangler secret put TURN_KEY_ID
