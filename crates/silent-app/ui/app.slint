@@ -37,6 +37,8 @@ export struct ChatLine {
 export struct SourceItem {
     id: string,
     title: string,
+    preview: image,
+    has-preview: bool,
 }
 
 export struct Verification {
@@ -712,11 +714,12 @@ component Room inherits Rectangle {
 component Sheet inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
+    in property <length> card-max-width: 460px;
     callback close;
     background: #000000a0;
     TouchArea { clicked => { root.close(); } }
     Rectangle {
-        width: min(460px, root.width - 40px);
+        width: min(root.card-max-width, root.width - 40px);
         height: min(content.preferred-height, root.height - 80px);
         border-radius: 14px;
         background: Palette.panel;
@@ -933,32 +936,65 @@ export component AppWindow inherits Window {
     }
 
     if root.picker-open: Sheet {
+        card-max-width: 760px;
         title: "Share your screen";
         subtitle: "Friends see it at up to 60 fps. Only people in this room can watch.";
         close => { root.picker-open = false; }
-        ScrollView {
-            min-height: min(root.sources.length * 46px, 320px);
-            VerticalLayout {
-                spacing: 6px;
-                for s in root.sources: Rectangle {
-                    height: 40px;
-                    border-radius: 8px;
-                    background: ta.has-hover ? Palette.card-hover : Palette.card;
-                    Text {
-                        x: 12px;
-                        width: parent.width - 24px;
-                        text: s.title;
-                        color: Palette.text;
-                        overflow: elide;
-                        vertical-alignment: center;
+        picker := ScrollView {
+            property <int> columns: 3;
+            property <length> gap: 12px;
+            property <length> card-width: (self.visible-width - (self.columns - 1) * self.gap) / self.columns;
+            property <length> card-height: self.card-width * 9 / 16 + 30px;
+            property <int> rows: (root.sources.length + self.columns - 1) / self.columns;
+            min-height: min(self.rows * (self.card-height + self.gap), 460px);
+            content-height: self.rows * (self.card-height + self.gap);
+            for s[i] in root.sources: Rectangle {
+                x: mod(i, picker.columns) * (picker.card-width + picker.gap);
+                y: floor(i / picker.columns) * (picker.card-height + picker.gap);
+                width: picker.card-width;
+                height: picker.card-height;
+                border-radius: 8px;
+                background: ta.has-hover ? Palette.card-hover : Palette.card;
+                border-width: ta.has-hover ? 2px : 0px;
+                border-color: Palette.accent;
+                Rectangle {
+                    x: 6px;
+                    y: 6px;
+                    width: parent.width - 12px;
+                    height: parent.height - 36px;
+                    border-radius: 4px;
+                    background: Palette.bg;
+                    clip: true;
+                    if s.has-preview: Image {
+                        width: parent.width;
                         height: parent.height;
+                        source: s.preview;
+                        image-fit: contain;
                     }
-                    ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.picker-open = false;
-                            root.pick-source(s.id);
-                        }
+                    if !s.has-preview: Text {
+                        text: s.id == "test" ? "Test pattern" : s.id == "picker" ? "System picker" : "No preview";
+                        color: Palette.subtext;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    x: 8px;
+                    y: parent.height - 26px;
+                    width: parent.width - 16px;
+                    height: 20px;
+                    text: s.title;
+                    color: Palette.text;
+                    font-size: 12px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.picker-open = false;
+                        root.pick-source(s.id);
                     }
                 }
             }

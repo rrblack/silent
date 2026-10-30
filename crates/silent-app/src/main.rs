@@ -844,6 +844,71 @@ fn room_error_text(e: &RoomError) -> String {
     }
 }
 
+fn source_item(id: &str, title: &str) -> SourceItem {
+    SourceItem {
+        id: id.into(),
+        title: title.into(),
+        preview: Image::default(),
+        has_preview: false,
+    }
+}
+
+/// Thumbnail size in the share picker, in pixels (twice the shown size, for
+/// sharp previews on high-density screens).
+const PREVIEW_WIDTH: u32 = 384;
+const PREVIEW_HEIGHT: u32 = 216;
+/// Sources grabbed at once while the picker fills in its previews.
+const PREVIEW_THREADS: usize = 4;
+
+/// Fills in the share picker's thumbnails as they arrive. Grabbing a frame
+/// can take a moment per window, so it runs off the UI thread; a picker
+/// opened again meanwhile makes the older batch stop.
+fn load_previews(window: slint::Weak<AppWindow>, sources: Vec<capture::CaptureChoice>) {
+    static BATCH: AtomicU64 = AtomicU64::new(0);
+    let batch = BATCH.fetch_add(1, Ordering::SeqCst) + 1;
+    let queue = Arc::new(Mutex::new(sources));
+    for _ in 0..PREVIEW_THREADS {
+        let queue = queue.clone();
+        let window = window.clone();
+        let _ = std::thread::Builder::new()
+            .name("preview".into())
+            .spawn(move || loop {
+                if BATCH.load(Ordering::SeqCst) != batch {
+                    return;
+                }
+                let Some(source) = queue.lock().unwrap().pop() else {
+                    return;
+                };
+                let Some(thumb) = capture::thumbnail(&source, PREVIEW_WIDTH, PREVIEW_HEIGHT) else {
+                    continue;
+                };
+                let id = match source.kind {
+                    capture::SourceKind::Screen => format!("s:{}", source.id),
+                    capture::SourceKind::Window => format!("w:{}", source.id),
+                };
+                let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &thumb.rgba,
+                    thumb.width,
+                    thumb.height,
+                );
+                let _ = window.upgrade_in_event_loop(move |w| {
+                    if BATCH.load(Ordering::SeqCst) != batch {
+                        return;
+                    }
+                    let model = w.get_sources();
+                    for i in 0..model.row_count() {
+                        if let Some(mut item) = model.row_data(i).filter(|it| it.id == id) {
+                            item.preview = Image::from_rgba8(pixels);
+                            item.has_preview = true;
+                            model.set_row_data(i, item);
+                            break;
+                        }
+                    }
+                });
+            });
+    }
+}
+
 fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<InviteCode>) {
     let my_name = silent_core::proto::clean_name(&settings.name);
     backend().rt.spawn(async move {
@@ -1165,11 +1230,9 @@ fn main() -> anyhow::Result<()> {
         }
         let mut sources = Vec::new();
         if capture::has_system_picker() {
-            sources.push(SourceItem {
-                id: "picker".into(),
-                title: "Choose with the system picker…".into(),
-            });
+            sources.push(source_item("picker", "Choose with the system picker…"));
         }
+        let mut capturable = Vec::new();
         // Windows gives screens no title, so number them.
         for (n, s) in capture::list_sources(capture::SourceKind::Screen)
             .into_iter()
@@ -1179,25 +1242,19 @@ fn main() -> anyhow::Result<()> {
                 "" => format!("Screen {}", n + 1),
                 t => format!("Screen {}: {t}", n + 1),
             };
-            sources.push(SourceItem {
-                id: format!("s:{}", s.id).into(),
-                title: title.into(),
-            });
+            sources.push(source_item(&format!("s:{}", s.id), &title));
+            capturable.push(s);
         }
         for s in capture::list_sources(capture::SourceKind::Window) {
             if !s.title.trim().is_empty() {
-                sources.push(SourceItem {
-                    id: format!("w:{}", s.id).into(),
-                    title: s.title.into(),
-                });
+                sources.push(source_item(&format!("w:{}", s.id), &s.title));
+                capturable.push(s);
             }
         }
-        sources.push(SourceItem {
-            id: "test".into(),
-            title: "Test pattern (diagnostics)".into(),
-        });
+        sources.push(source_item("test", "Test pattern (diagnostics)"));
         w.set_sources(ModelRc::new(VecModel::from(sources)));
         w.set_picker_open(true);
+        load_previews(weak.clone(), capturable);
     });
 
     let weak = window.as_weak();
