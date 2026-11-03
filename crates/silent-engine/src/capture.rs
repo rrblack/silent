@@ -110,13 +110,22 @@ fn shrink(frame: &DesktopFrame, max_width: u32, max_height: u32) -> Option<Thumb
     Some(Thumbnail {
         width: tw,
         height: th,
-        rgba: box_filter(frame.data(), frame.stride() as usize, w, h, tw, th),
+        rgba: box_filter(frame.data(), frame.stride() as usize, w, h, tw, th, true),
     })
 }
 
-/// Averages up to 4x4 samples of each target pixel's area of a BGRA image
-/// into RGBA.
-fn box_filter(bgra: &[u8], stride: usize, w: u32, h: u32, tw: u32, th: u32) -> Vec<u8> {
+/// Averages up to 4x4 samples of each target pixel's area of an RGBA image,
+/// or of a BGRA one when `bgra` is set, into RGBA.
+pub(crate) fn box_filter(
+    src: &[u8],
+    stride: usize,
+    w: u32,
+    h: u32,
+    tw: u32,
+    th: u32,
+    bgra: bool,
+) -> Vec<u8> {
+    let (r, b) = if bgra { (2, 0) } else { (0, 2) };
     let mut out = Vec::with_capacity((tw * th * 4) as usize);
     for ty in 0..th {
         let (y0, y1) = (ty * h / th, ((ty + 1) * h / th).max(ty * h / th + 1));
@@ -129,10 +138,10 @@ fn box_filter(bgra: &[u8], stride: usize, w: u32, h: u32, tw: u32, th: u32) -> V
                 for sx in 0..4 {
                     let x = (x0 + (x1 - x0) * sx / 4).min(w - 1) as usize;
                     let at = y * stride + x * 4;
-                    if let Some(px) = bgra.get(at..at + 3) {
-                        sum[0] += u32::from(px[2]);
+                    if let Some(px) = src.get(at..at + 3) {
+                        sum[0] += u32::from(px[r]);
                         sum[1] += u32::from(px[1]);
-                        sum[2] += u32::from(px[0]);
+                        sum[2] += u32::from(px[b]);
                         n += 1;
                     }
                 }
@@ -289,7 +298,9 @@ mod tests {
                 });
             }
         }
-        let out = box_filter(&bgra, stride, 4, 2, 2, 1);
+        let out = box_filter(&bgra, stride, 4, 2, 2, 1, true);
         assert_eq!(out, vec![0, 0, 255, 255, 255, 0, 0, 255]);
+        let out = box_filter(&bgra, stride, 4, 2, 2, 1, false);
+        assert_eq!(out, vec![255, 0, 0, 255, 0, 0, 255, 255]);
     }
 }
