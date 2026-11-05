@@ -148,7 +148,7 @@ struct UiState {
     /// spotlight by themselves.
     screens_seen: HashSet<String>,
     speaking: HashSet<PeerId>,
-    /// Received files, by chat line key, until the room is left.
+    /// Files sent and received, by chat line key, until the room is left.
     files: HashMap<String, (String, Vec<u8>)>,
     sent_files: u32,
     /// When the room was entered, for the call timer.
@@ -161,6 +161,9 @@ thread_local! {
     static UI: RefCell<Option<UiState>> = const { RefCell::new(None) };
     static DEVICES: RefCell<Devices> = RefCell::new(Devices::default());
     static TRY_OUT: RefCell<Option<TryOut>> = const { RefCell::new(None) };
+    /// The share picker's last thumbnails, by source id, until the room is
+    /// left. Kept in memory only.
+    static PREVIEWS: RefCell<HashMap<String, Image>> = RefCell::new(HashMap::new());
 }
 
 /// The devices the pickers list, after their first "default" entry, and the
@@ -913,7 +916,9 @@ fn send_path(path: std::path::PathBuf, picked_in: u64) {
                         file_ready: true,
                         ..Default::default()
                     });
-                    s.show_preview(key, data);
+                    s.show_preview(key.clone(), data.clone());
+                    // So a picture you sent can be saved like a received one.
+                    s.files.insert(key, (name, data));
                 }
                 Some(Err(e)) => s.system(format!("Couldn't send {name}: {e}.")),
                 None => {}
@@ -986,12 +991,14 @@ fn room_error_text(e: &RoomError) -> String {
     }
 }
 
-fn source_item(id: &str, title: &str) -> SourceItem {
+fn source_item(id: &str, title: &str, loading: bool) -> SourceItem {
+    let preview = PREVIEWS.with(|p| p.borrow().get(id).cloned());
     SourceItem {
         id: id.into(),
         title: title.into(),
-        preview: Image::default(),
-        has_preview: false,
+        has_preview: preview.is_some(),
+        preview: preview.unwrap_or_default(),
+        loading,
     }
 }
 
@@ -999,55 +1006,107 @@ fn source_item(id: &str, title: &str) -> SourceItem {
 /// sharp previews on high-density screens).
 const PREVIEW_WIDTH: u32 = 384;
 const PREVIEW_HEIGHT: u32 = 216;
-/// Sources grabbed at once while the picker fills in its previews.
-const PREVIEW_THREADS: usize = 4;
 
-/// Fills in the share picker's thumbnails as they arrive. Grabbing a frame
-/// can take a moment per window, so it runs off the UI thread; a picker
-/// opened again meanwhile makes the older batch stop.
-fn load_previews(window: slint::Weak<AppWindow>, sources: Vec<capture::CaptureChoice>) {
-    static BATCH: AtomicU64 = AtomicU64::new(0);
-    let batch = BATCH.fetch_add(1, Ordering::SeqCst) + 1;
-    let queue = Arc::new(Mutex::new(sources));
-    for _ in 0..PREVIEW_THREADS {
-        let queue = queue.clone();
-        let window = window.clone();
+/// Bumped each time the picker opens or closes, so the worker drops work for
+/// a picker that is gone.
+static PICKER_BATCH: AtomicU64 = AtomicU64::new(0);
+
+/// Fills the share picker: lists screens and windows, then grabs a
+/// thumbnail of each. Everything runs on one long-lived thread, so the UI
+/// never waits on capture and capturers never run side by side (Windows'
+/// capture APIs stall when several start at once). Thumbnails from the last
+/// opening show until fresh ones arrive.
+fn load_picker(window: slint::Weak<AppWindow>) {
+    type Job = (u64, slint::Weak<AppWindow>);
+    static WORKER: OnceLock<Mutex<std::sync::mpsc::Sender<Job>>> = OnceLock::new();
+    let batch = PICKER_BATCH.fetch_add(1, Ordering::SeqCst) + 1;
+    let worker = WORKER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
         let _ = std::thread::Builder::new()
-            .name("preview".into())
-            .spawn(move || loop {
-                if BATCH.load(Ordering::SeqCst) != batch {
-                    return;
+            .name("picker".into())
+            .spawn(move || {
+                while let Ok((batch, window)) = rx.recv() {
+                    fill_picker(batch, &window);
                 }
-                let Some(source) = queue.lock().unwrap().pop() else {
-                    return;
-                };
-                let Some(thumb) = capture::thumbnail(&source, PREVIEW_WIDTH, PREVIEW_HEIGHT) else {
-                    continue;
-                };
-                let id = match source.kind {
-                    capture::SourceKind::Screen => format!("s:{}", source.id),
-                    capture::SourceKind::Window => format!("w:{}", source.id),
-                };
-                let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                    &thumb.rgba,
-                    thumb.width,
-                    thumb.height,
-                );
-                let _ = window.upgrade_in_event_loop(move |w| {
-                    if BATCH.load(Ordering::SeqCst) != batch {
-                        return;
-                    }
-                    let model = w.get_sources();
-                    for i in 0..model.row_count() {
-                        if let Some(mut item) = model.row_data(i).filter(|it| it.id == id) {
-                            item.preview = Image::from_rgba8(pixels);
-                            item.has_preview = true;
-                            model.set_row_data(i, item);
-                            break;
-                        }
-                    }
-                });
             });
+        Mutex::new(tx)
+    });
+    let _ = worker.lock().unwrap().send((batch, window));
+}
+
+fn fill_picker(batch: u64, window: &slint::Weak<AppWindow>) {
+    let current = || PICKER_BATCH.load(Ordering::SeqCst) == batch;
+    if !current() {
+        return;
+    }
+    let mut listed = Vec::new();
+    // Windows gives screens no title, so number them.
+    for (n, s) in capture::list_sources(capture::SourceKind::Screen)
+        .into_iter()
+        .enumerate()
+    {
+        let title = match s.title.trim() {
+            "" => format!("Screen {}", n + 1),
+            t => format!("Screen {}: {t}", n + 1),
+        };
+        listed.push((format!("s:{}", s.id), title, s));
+    }
+    for s in capture::list_sources(capture::SourceKind::Window) {
+        if !s.title.trim().is_empty() {
+            listed.push((format!("w:{}", s.id), s.title.clone(), s));
+        }
+    }
+    let rows: Vec<(String, String)> = listed
+        .iter()
+        .map(|(id, title, _)| (id.clone(), title.clone()))
+        .collect();
+    let _ = window.upgrade_in_event_loop(move |w| {
+        if PICKER_BATCH.load(Ordering::SeqCst) != batch {
+            return;
+        }
+        let mut items = Vec::new();
+        if capture::has_system_picker() {
+            items.push(source_item(
+                "picker",
+                "Choose with the system picker…",
+                false,
+            ));
+        }
+        for (id, title) in &rows {
+            items.push(source_item(id, title, true));
+        }
+        items.push(source_item("test", "Test pattern (diagnostics)", false));
+        w.set_sources(ModelRc::new(VecModel::from(items)));
+        w.set_sources_listed(true);
+    });
+    for (id, _, source) in listed {
+        if !current() {
+            return;
+        }
+        let pixels = capture::thumbnail(&source, PREVIEW_WIDTH, PREVIEW_HEIGHT).map(|t| {
+            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                &t.rgba, t.width, t.height,
+            )
+        });
+        let _ = window.upgrade_in_event_loop(move |w| {
+            if PICKER_BATCH.load(Ordering::SeqCst) != batch {
+                return;
+            }
+            let model = w.get_sources();
+            for i in 0..model.row_count() {
+                if let Some(mut item) = model.row_data(i).filter(|it| it.id == id) {
+                    item.loading = false;
+                    if let Some(pixels) = pixels {
+                        let image = Image::from_rgba8(pixels);
+                        PREVIEWS.with(|p| p.borrow_mut().insert(id.clone(), image.clone()));
+                        item.preview = image;
+                        item.has_preview = true;
+                    }
+                    model.set_row_data(i, item);
+                    break;
+                }
+            }
+        });
     }
 }
 
@@ -1137,7 +1196,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
             UI.with(|cell| *cell.borrow_mut() = Some(state));
             ui(|s| {
                 if created {
-                    s.system("Room created. Share the code above with up to three friends.");
+                    s.system("Room created. Share the code above with up to three friends. Stats and Verify turn on once someone joins.");
                 }
                 s.rebuild();
             });
@@ -1187,6 +1246,8 @@ fn leave_room(error: Option<&str>) {
         w.window().set_fullscreen(false);
         w.set_focus_index(-1);
         w.set_picker_open(false);
+        PICKER_BATCH.fetch_add(1, Ordering::SeqCst);
+        PREVIEWS.with(|p| p.borrow_mut().clear());
         w.set_verify_open(false);
         w.set_settings_open(false);
         stop_try_out(&w);
@@ -1371,37 +1432,25 @@ fn main() -> anyhow::Result<()> {
             });
             return;
         }
-        let mut sources = Vec::new();
+        let mut items = Vec::new();
         if capture::has_system_picker() {
-            sources.push(source_item("picker", "Choose with the system picker…"));
+            items.push(source_item(
+                "picker",
+                "Choose with the system picker…",
+                false,
+            ));
         }
-        let mut capturable = Vec::new();
-        // Windows gives screens no title, so number them.
-        for (n, s) in capture::list_sources(capture::SourceKind::Screen)
-            .into_iter()
-            .enumerate()
-        {
-            let title = match s.title.trim() {
-                "" => format!("Screen {}", n + 1),
-                t => format!("Screen {}: {t}", n + 1),
-            };
-            sources.push(source_item(&format!("s:{}", s.id), &title));
-            capturable.push(s);
-        }
-        for s in capture::list_sources(capture::SourceKind::Window) {
-            if !s.title.trim().is_empty() {
-                sources.push(source_item(&format!("w:{}", s.id), &s.title));
-                capturable.push(s);
-            }
-        }
-        sources.push(source_item("test", "Test pattern (diagnostics)"));
-        w.set_sources(ModelRc::new(VecModel::from(sources)));
+        items.push(source_item("test", "Test pattern (diagnostics)", false));
+        w.set_sources(ModelRc::new(VecModel::from(items)));
+        w.set_sources_listed(false);
         w.set_picker_open(true);
-        load_previews(weak.clone(), capturable);
+        load_picker(weak.clone());
     });
 
     let weak = window.as_weak();
     window.on_pick_source(move |id| {
+        // The picker is gone; its thumbnails would only compete with the share.
+        PICKER_BATCH.fetch_add(1, Ordering::SeqCst);
         let target = match id.as_str() {
             "picker" => Some(ScreenTarget::SystemPicker),
             "test" => Some(ScreenTarget::TestPattern),
@@ -1436,6 +1485,10 @@ fn main() -> anyhow::Result<()> {
     });
 
     window.on_leave(|| leave_room(None));
+
+    window.on_picker_closed(|| {
+        PICKER_BATCH.fetch_add(1, Ordering::SeqCst);
+    });
 
     let weak = window.as_weak();
     window.on_settings_opened(move || {

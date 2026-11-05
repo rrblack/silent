@@ -33,7 +33,11 @@ impl Chime {
 }
 
 const NOTE: f32 = 0.22;
-const LENGTH: f32 = 0.09 + NOTE;
+/// Silence before the first note. Output devices that were idle (many
+/// Windows drivers, Bluetooth headsets) fade in when a stream starts, which
+/// made the first chime after a pause much quieter than the next.
+const LEAD: f32 = 0.25;
+const LENGTH: f32 = LEAD + 0.09 + NOTE;
 const VOLUME: f32 = 0.16;
 
 /// Chimes closer together than this play once (three friends already in a
@@ -100,7 +104,7 @@ fn render(chime: Chime, rate: f32) -> Vec<f32> {
     let len = (LENGTH * rate) as usize;
     let mut out = vec![0.0; len];
     for (freq, start) in chime.notes() {
-        let first = (start * rate) as usize;
+        let first = ((LEAD + start) * rate) as usize;
         for (i, sample) in out.iter_mut().enumerate().skip(first) {
             let t = (i - first) as f32 / rate;
             if t > NOTE {
@@ -153,6 +157,8 @@ mod tests {
             assert_eq!(samples.len(), (LENGTH * 48_000.0) as usize);
             let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
             assert!(peak > 0.05 && peak < 1.0, "peak {peak}");
+            let lead = (LEAD * 48_000.0) as usize;
+            assert!(samples[..lead].iter().all(|s| *s == 0.0));
         }
     }
 }

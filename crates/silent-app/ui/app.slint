@@ -39,6 +39,8 @@ export struct SourceItem {
     title: string,
     preview: image,
     has-preview: bool,
+    /// Its thumbnail is still being grabbed.
+    loading: bool,
 }
 
 export struct Verification {
@@ -569,20 +571,47 @@ component Room inherits Rectangle {
                                 Text { text: line.who; color: line.mine ? Palette.accent : Palette.text; font-size: 12px; font-weight: 700; }
                                 Text { text: line.time; color: Palette.subtext; font-size: 11px; }
                             }
-                            Text {
+                            // A picture shows by itself; its file name would only repeat it.
+                            if !line.has-image: Text {
                                 text: line.text;
                                 color: line.system ? Palette.subtext : Palette.text;
                                 font-size: line.system ? 12px : 13px;
                                 font-italic: line.system;
                                 wrap: word-wrap;
                             }
-                            if line.has-image: Image {
-                                source: line.image;
-                                width: min(self.source.width * 1px, 260px);
-                                height: self.width * self.source.height / max(self.source.width, 1);
-                                image-fit: contain;
+                            if line.has-image: Rectangle {
+                                width: min(line.image.width * 1px, 260px);
+                                height: self.width * line.image.height / max(line.image.width, 1);
+                                border-radius: 8px;
+                                clip: true;
+                                Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: line.image;
+                                    image-fit: contain;
+                                }
+                                if line.file-ready: Rectangle {
+                                    x: parent.width - self.width - 6px;
+                                    y: parent.height - self.height - 6px;
+                                    width: 58px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    background: save-image.has-hover ? Palette.accent : #000000b8;
+                                    Text {
+                                        text: "Save";
+                                        color: Palette.text;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    save-image := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.save-file(line.file); }
+                                    }
+                                }
                             }
-                            if line.file != "" && line.file-ready && !line.mine: Text {
+                            if line.file != "" && line.file-ready && !line.mine && !line.has-image: Text {
                                 text: "Save…";
                                 color: Palette.accent;
                                 font-size: 12px;
@@ -706,6 +735,8 @@ export component AppWindow inherits Window {
     in-out property <string> draft;
 
     in property <[SourceItem]> sources;
+    /// The picker has the full list of screens and windows.
+    in property <bool> sources-listed;
     in-out property <bool> picker-open: false;
     in-out property <bool> verify-open: false;
     in-out property <bool> stats-open: false;
@@ -730,6 +761,7 @@ export component AppWindow inherits Window {
     callback toggle-camera;
     callback toggle-screen;
     callback pick-source(string);
+    callback picker-closed;
     callback leave;
     callback copy-code;
     callback send-chat;
@@ -863,7 +895,10 @@ export component AppWindow inherits Window {
         card-max-width: 760px;
         title: "Share your screen";
         subtitle: "Friends see it at up to 60 fps. Only people in this room can watch.";
-        close => { root.picker-open = false; }
+        close => {
+            root.picker-open = false;
+            root.picker-closed();
+        }
         picker := ScrollView {
             property <int> columns: 3;
             property <length> gap: 12px;
@@ -896,7 +931,7 @@ export component AppWindow inherits Window {
                         image-fit: contain;
                     }
                     if !s.has-preview: Text {
-                        text: s.id == "test" ? "Test pattern" : s.id == "picker" ? "System picker" : "No preview";
+                        text: s.id == "test" ? "Test pattern" : s.id == "picker" ? "System picker" : s.loading ? "Loading…" : "No preview";
                         color: Palette.subtext;
                         font-size: 12px;
                         horizontal-alignment: center;
@@ -927,7 +962,18 @@ export component AppWindow inherits Window {
             text: "Include computer audio (everything except this call)";
             checked <=> root.share-audio;
         }
-        PillButton { label: "Cancel"; clicked => { root.picker-open = false; } }
+        if !root.sources-listed: Text {
+            text: "Finding your screens and windows…";
+            color: Palette.subtext;
+            font-size: 12px;
+        }
+        PillButton {
+            label: "Cancel";
+            clicked => {
+                root.picker-open = false;
+                root.picker-closed();
+            }
+        }
     }
 
     if root.verify-open: Sheet {
