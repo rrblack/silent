@@ -71,7 +71,7 @@ CI (`.github/workflows/ci.yml`) runs:
 - release builds and packages for Linux, Windows and macOS
 - the Android APK
 
-Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` and `silent-android` artifacts. `.github/workflows/ios.yml` builds the iOS app for the simulator, only when `ios/` or `crates/silent-ffi` change (macOS minutes cost 10x on a private repo).
+Every push to `main` uploads `silent-Windows`, `silent-macOS`, `silent-Linux` and `silent-android` artifacts, and once everything passes, replaces the files of the `latest` pre-release (releases/tag/latest) with that build. `.github/workflows/ios.yml` builds the iOS app for the simulator, only when `ios/` or `crates/silent-ffi` change (macOS minutes cost 10x on a private repo).
 
 ## Rules
 
