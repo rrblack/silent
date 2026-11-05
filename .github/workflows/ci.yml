@@ -129,3 +129,27 @@ jobs:
         with:
           name: silent-android
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  release:
+    name: Publish the "latest" release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [checks, worker, build, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Replace the release's files with this build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir upload
+          find artifacts -type f -exec cp {} upload/ \;
+          mv upload/app-debug.apk upload/Silent-android.apk
+          notes="Built from ${GITHUB_SHA::7} on $(date -u '+%Y-%m-%d %H:%M UTC'). Windows: the .zip. macOS: the .dmg. Linux: the .deb or .tar.gz. Android: the .apk."
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest upload/* --target "$GITHUB_SHA" --prerelease \
+            --title "Latest build (${GITHUB_SHA::7})" --notes "$notes"
