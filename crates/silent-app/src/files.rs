@@ -71,7 +71,7 @@ pub fn read_to_send(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> 
 }
 
 /// Asks where to save `data`, then writes it. `Ok(false)` when cancelled.
-pub async fn save(name: String, data: Vec<u8>) -> std::io::Result<bool> {
+pub async fn save(name: String, data: std::sync::Arc<[u8]>) -> std::io::Result<bool> {
     let Some(handle) = rfd::AsyncFileDialog::new()
         .set_title("Save file")
         .set_file_name(&name)

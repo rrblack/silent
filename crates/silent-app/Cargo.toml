@@ -28,6 +28,10 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # Join and leave chimes; ALSA on Linux, WASAPI on Windows, CoreAudio on macOS.
 cpal = "0.16"
+# Videos in chat: H.264 pictures (OpenH264, built from source) and AAC sound
+# in MP4 or MOV.
+openh264 = "0.9"
+symphonia = { version = "0.6", default-features = false, features = ["aac", "isomp4"] }
 
 [target.'cfg(windows)'.dependencies]
 # Computer audio for screen shares: process loopback, everything but Silent.

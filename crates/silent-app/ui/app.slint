@@ -32,6 +32,13 @@ export struct ChatLine {
     file-ready: bool,
     has-image: bool,
     image: image,
+    /// A video that plays here: `image` is its poster, then its pictures.
+    video: bool,
+    playing: bool,
+    /// How far through the video, 0 to 1.
+    progress: float,
+    /// Its length, like "0:42".
+    duration: string,
 }
 
 export struct SourceItem {
@@ -427,6 +434,7 @@ component Room inherits Rectangle {
     callback send-chat;
     callback send-file;
     callback save-file(string);
+    callback toggle-video(string);
     callback show-verify;
     callback show-stats;
     callback show-settings;
@@ -580,7 +588,8 @@ component Room inherits Rectangle {
                                 wrap: word-wrap;
                             }
                             if line.has-image: Rectangle {
-                                width: min(line.image.width * 1px, 260px);
+                                // At most 260 wide and 300 tall: phone videos stand upright.
+                                width: min(line.image.width * 1px, 260px, 300px * line.image.width / max(line.image.height, 1));
                                 height: self.width * line.image.height / max(line.image.width, 1);
                                 border-radius: 8px;
                                 clip: true;
@@ -589,6 +598,45 @@ component Room inherits Rectangle {
                                     height: parent.height;
                                     source: line.image;
                                     image-fit: contain;
+                                }
+                                if line.video: TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.toggle-video(line.file); }
+                                }
+                                if line.video && !line.playing: Rectangle {
+                                    width: 44px;
+                                    height: 44px;
+                                    border-radius: 22px;
+                                    background: #000000b8;
+                                    Text {
+                                        text: "▶";
+                                        color: Palette.text;
+                                        font-size: 18px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                if line.video: Rectangle {
+                                    x: 6px;
+                                    y: parent.height - self.height - 6px;
+                                    width: duration-text.preferred-width + 14px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    background: #000000b8;
+                                    duration-text := Text {
+                                        text: line.duration;
+                                        color: Palette.text;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                if line.video && line.progress > 0: Rectangle {
+                                    x: 0;
+                                    y: parent.height - 3px;
+                                    width: parent.width * line.progress;
+                                    height: 3px;
+                                    background: Palette.accent;
                                 }
                                 if line.file-ready: Rectangle {
                                     x: parent.width - self.width - 6px;
@@ -767,6 +815,7 @@ export component AppWindow inherits Window {
     callback send-chat;
     callback send-file;
     callback save-file(string);
+    callback toggle-video(string);
     callback stats-opened;
     callback tile-clicked(string);
     callback mute-friend(string);
@@ -868,6 +917,7 @@ export component AppWindow inherits Window {
         send-chat => { root.send-chat(); }
         send-file => { root.send-file(); }
         save-file(id) => { root.save-file(id); }
+        toggle-video(id) => { root.toggle-video(id); }
         show-verify => { root.verify-open = true; }
         show-settings => {
             root.settings-open = true;

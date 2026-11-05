@@ -3,6 +3,7 @@
 mod computer_audio;
 mod files;
 mod meter;
+mod player;
 mod sounds;
 mod video;
 
@@ -149,12 +150,31 @@ struct UiState {
     screens_seen: HashSet<String>,
     speaking: HashSet<PeerId>,
     /// Files sent and received, by chat line key, until the room is left.
-    files: HashMap<String, (String, Vec<u8>)>,
+    files: HashMap<String, (String, Arc<[u8]>)>,
     sent_files: u32,
+    /// The video playing in chat, if any.
+    video: Option<Playing>,
     /// When the room was entered, for the call timer.
     started: std::time::Instant,
     /// Chat already said someone has another version of Silent.
     told_version: bool,
+}
+
+/// A video playing in chat.
+struct Playing {
+    /// Its chat line.
+    key: String,
+    /// Tells its frames apart from an earlier play's.
+    id: u64,
+    player: player::Player,
+    paused: bool,
+}
+
+/// Wraps a decoded picture for Slint.
+fn rgba_pixels(
+    frame: silent_engine::render::RgbaImage,
+) -> slint::SharedPixelBuffer<slint::Rgba8Pixel> {
+    slint::SharedPixelBuffer::clone_from_slice(&frame.data, frame.width, frame.height)
 }
 
 thread_local! {
@@ -616,8 +636,9 @@ impl UiState {
         }
     }
 
-    /// Decodes an image preview off the UI thread and shows it on line `key`.
-    fn show_preview(&self, key: String, data: Vec<u8>) {
+    /// Decodes a picture's preview, or a video's first picture, off the UI
+    /// thread and shows it on line `key`.
+    fn show_preview(&self, key: String, data: Arc<[u8]>) {
         backend().rt.spawn_blocking(move || {
             if let Some(pixels) = files::preview(&data) {
                 let _ = slint::invoke_from_event_loop(move || {
@@ -628,8 +649,80 @@ impl UiState {
                         })
                     })
                 });
+            } else if let Some(poster) = player::poster(data) {
+                let pixels = rgba_pixels(poster.frame);
+                let duration = elapsed_text(Duration::from_secs_f64(poster.seconds.ceil()));
+                let _ = slint::invoke_from_event_loop(move || {
+                    ui(|s| {
+                        s.file_line(&key, |line| {
+                            line.image = Image::from_rgba8(pixels);
+                            line.has_image = true;
+                            line.video = true;
+                            line.duration = duration;
+                        })
+                    })
+                });
             }
         });
+    }
+
+    /// Plays or pauses the video on line `key`, stopping any other one.
+    fn toggle_video(&mut self, key: &str) {
+        if let Some(playing) = self.video.as_mut().filter(|p| p.key == key) {
+            playing.paused = !playing.paused;
+            playing.player.set_paused(playing.paused);
+            let on = !playing.paused;
+            self.file_line(key, |line| line.playing = on);
+            return;
+        }
+        if let Some(old) = self.video.take() {
+            self.file_line(&old.key, |line| line.playing = false);
+        }
+        let Some((_, data)) = self.files.get(key) else {
+            return;
+        };
+        static PLAYS: AtomicU64 = AtomicU64::new(0);
+        let id = PLAYS.fetch_add(1, Ordering::Relaxed);
+        let current = move |s: &UiState| s.video.as_ref().is_some_and(|p| p.id == id);
+        let (frame_key, end_key) = (key.to_owned(), key.to_owned());
+        let player = player::Player::start(
+            data.clone(),
+            DEVICES.with(|d| d.borrow().speaker_name()),
+            move |frame, progress| {
+                let pixels = rgba_pixels(frame);
+                let key = frame_key.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    ui(|s| {
+                        if current(s) {
+                            s.file_line(&key, |line| {
+                                line.image = Image::from_rgba8(pixels);
+                                line.progress = progress;
+                            });
+                        }
+                    })
+                });
+            },
+            move || {
+                let _ = slint::invoke_from_event_loop(move || {
+                    ui(|s| {
+                        if current(s) {
+                            s.video = None;
+                            s.file_line(&end_key, |line| {
+                                line.playing = false;
+                                line.progress = 0.0;
+                            });
+                        }
+                    })
+                });
+            },
+        );
+        self.video = Some(Playing {
+            key: key.to_owned(),
+            id,
+            player,
+            paused: false,
+        });
+        self.file_line(key, |line| line.playing = true);
     }
 
     /// Plays `chime` unless sounds are off in Settings.
@@ -797,6 +890,7 @@ impl UiState {
                     line.text = text.into();
                     line.file_ready = true;
                 });
+                let data: Arc<[u8]> = data.into();
                 self.show_preview(key.clone(), data.clone());
                 self.files.insert(key, (name, data));
             }
@@ -916,6 +1010,7 @@ fn send_path(path: std::path::PathBuf, picked_in: u64) {
                         file_ready: true,
                         ..Default::default()
                     });
+                    let data: Arc<[u8]> = data.into();
                     s.show_preview(key.clone(), data.clone());
                     // So a picture you sent can be saved like a received one.
                     s.files.insert(key, (name, data));
@@ -1177,6 +1272,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
                 speaking: HashSet::new(),
                 files: HashMap::new(),
                 sent_files: 0,
+                video: None,
                 started: std::time::Instant::now(),
                 told_version: false,
             };
@@ -1634,6 +1730,8 @@ fn main() -> anyhow::Result<()> {
             }
         });
     });
+
+    window.on_toggle_video(|key| ui(|s| s.toggle_video(key.as_str())));
 
     window.on_save_file(|key| {
         let Some((name, data)) = UI.with(|c| {
