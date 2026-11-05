@@ -91,7 +91,58 @@ pub fn to_rgba(frame: &BoxVideoFrame, max_w: u32, max_h: u32) -> Option<RgbaImag
     } else {
         (max_w, max_h)
     };
-    let mut i420 = any_to_i420(buf)?;
+    let i420 = any_to_i420(buf)?;
+    Some(finish(i420, fit_w, fit_h, frame.rotation))
+}
+
+/// Converts a picture decoded from a file (a video sent in chat) to RGBA:
+/// the Y, U and V planes of a `width x height` I420 picture with their row
+/// strides, scaled down to fit `max_w x max_h` after `rotation`.
+pub fn i420_to_rgba(
+    planes: [&[u8]; 3],
+    strides: [usize; 3],
+    (width, height): (u32, u32),
+    rotation: VideoRotation,
+    (max_w, max_h): (u32, u32),
+) -> Option<RgbaImage> {
+    if width < 2 || height < 2 {
+        return None;
+    }
+    let mut i420 = I420Buffer::new(width, height);
+    let (dst_strides, chroma_h) = {
+        let (y, u, v) = i420.strides();
+        (
+            [y as usize, u as usize, v as usize],
+            i420.chroma_height() as usize,
+        )
+    };
+    let chroma_w = i420.chroma_width() as usize;
+    let (dy, du, dv) = i420.data_mut();
+    let rows = [
+        (height as usize, width as usize),
+        (chroma_h, chroma_w),
+        (chroma_h, chroma_w),
+    ];
+    for (i, dst) in [dy, du, dv].into_iter().enumerate() {
+        let (count, len) = rows[i];
+        for row in 0..count {
+            let from = row * strides[i];
+            let to = row * dst_strides[i];
+            dst[to..to + len].copy_from_slice(planes[i].get(from..from + len)?);
+        }
+    }
+    let (fit_w, fit_h) = if is_sideways(rotation) {
+        (max_h, max_w)
+    } else {
+        (max_w, max_h)
+    };
+    Some(finish(i420, fit_w, fit_h, rotation))
+}
+
+/// Scales `i420` to fit `fit_w x fit_h`, converts it to RGBA and turns it
+/// upright.
+fn finish(mut i420: I420Buffer, fit_w: u32, fit_h: u32, rotation: VideoRotation) -> RgbaImage {
+    let (w, h) = (i420.width(), i420.height());
     let (tw, th) = fit(w, h, fit_w, fit_h);
     if (tw, th) != (w, h) {
         i420 = i420.scale(tw as i32, th as i32);
@@ -105,14 +156,14 @@ pub fn to_rgba(frame: &BoxVideoFrame, max_w: u32, max_h: u32) -> Option<RgbaImag
         tw as i32,
         th as i32,
     );
-    Some(rotate(
+    rotate(
         RgbaImage {
             width: tw,
             height: th,
             data,
         },
-        frame.rotation,
-    ))
+        rotation,
+    )
 }
 
 fn any_to_i420(buf: &dyn VideoBuffer) -> Option<I420Buffer> {
