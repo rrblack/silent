@@ -1,8 +1,10 @@
 package app.silent
 
 import android.app.Application
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioManager
+import android.media.MediaMetadataRetriever
 import android.media.ToneGenerator
 import android.os.Handler
 import android.os.SystemClock
@@ -57,7 +59,10 @@ data class ChatLine(
     /** Set for a file line; the key to save it with. */
     val file: String? = null,
     val fileReady: Boolean = false,
+    /** A picture, or a video's first frame. */
     val image: ImageBitmap? = null,
+    /** A video's length, like "0:42"; null for anything else. */
+    val duration: String? = null,
 )
 
 /** Files can be up to this big (the engine's limit). */
@@ -116,9 +121,11 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private val slots = ConcurrentHashMap<TileKey, FrameSlot>()
-    /** Received files, in memory only, until the room is left. */
+    /** Files sent and received, in memory only, until the room is left. */
     private val files = mutableMapOf<String, Pair<String, ByteArray>>()
     private var sentFiles = 0
+    /** The chat line whose video is playing. */
+    var playing by mutableStateOf<String?>(null)
     fun slot(key: TileKey): FrameSlot = slots.getOrPut(key) { FrameSlot() }
 
     /**
@@ -340,20 +347,55 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         if (i >= 0) chat[i] = change(chat[i])
     }
 
-    /** Decodes a small preview when the file is an image. */
+    /** Decodes a small preview when the file is a picture, or the first frame of a video. */
     private fun showPreview(key: String, data: ByteArray) {
         viewModelScope.launch {
-            val image = withContext(Dispatchers.Default) {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
-                if (bounds.outWidth <= 0) return@withContext null
-                var sample = 1
-                while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
-                val options = BitmapFactory.Options().apply { inSampleSize = sample }
-                BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
-            } ?: return@launch
-            updateFileLine(key) { it.copy(image = image) }
+            val image = withContext(Dispatchers.Default) { picture(data) }
+            if (image != null) {
+                updateFileLine(key) { it.copy(image = image) }
+                return@launch
+            }
+            val poster = withContext(Dispatchers.Default) { videoPoster(data) } ?: return@launch
+            updateFileLine(key) { it.copy(image = poster.first, duration = poster.second) }
         }
+    }
+
+    private fun picture(data: ByteArray): ImageBitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        if (bounds.outWidth <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
+    }
+
+    /** A video's first frame, upright, and its length; null when the phone can't play it. */
+    private fun videoPoster(data: ByteArray): Pair<ImageBitmap, String>? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(BytesSource(data))
+            if (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) != "yes") return null
+            val millis = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+            val full = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return null
+            val scale = minOf(1f, 720f / maxOf(full.width, full.height))
+            val frame = if (scale < 1f) {
+                Bitmap.createScaledBitmap(full, (full.width * scale).toInt(), (full.height * scale).toInt(), true)
+            } else {
+                full
+            }
+            val seconds = (millis + 999) / 1000
+            frame.asImageBitmap() to "%d:%02d".format(seconds / 60, seconds % 60)
+        } catch (e: Exception) {
+            null
+        } finally {
+            retriever.release()
+        }
+    }
+
+    /** Plays the video on chat line `key`, or stops it if it is the one playing. */
+    fun toggleVideo(key: String) {
+        playing = if (playing == key) null else key
     }
 
     fun sendFile(fileName: String, data: ByteArray) {
@@ -366,6 +408,8 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         }
         sentFiles += 1
         val key = "me:$sentFiles"
+        // So a picture or video you sent can be saved and played like a received one.
+        files[key] = fileName to data
         chat.add(
             ChatLine(
                 name.ifBlank { "Me" }, "File: $fileName (${sizeText(data.size.toLong())})",
@@ -375,7 +419,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         showPreview(key, data)
     }
 
-    /** The name and bytes of a received file, to save. */
+    /** The name and bytes of a file in chat, to save or play. */
     fun file(key: String): Pair<String, ByteArray>? = files[key]
 
     fun notify(text: String) = system(text)
@@ -462,6 +506,7 @@ class RoomViewModel(app: Application) : AndroidViewModel(app) {
         listener = null
         slots.clear()
         files.clear()
+        playing = null
         error = reason
         // Not viewModelScope: when the ViewModel is cleared, that scope is
         // cancelled before onCleared runs, and the room would never be left.
