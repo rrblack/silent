@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.StopScreenShare
@@ -71,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -568,17 +570,16 @@ private fun ChatPanel(vm: RoomViewModel, modifier: Modifier, onAttach: () -> Uni
                                 fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             Text(line.time, color = Palette.subtext, fontSize = 11.sp)
                         }
-                        Text(line.text, color = Palette.text, fontSize = 14.sp)
-                        line.image?.let {
-                            Image(
-                                bitmap = it, contentDescription = line.text,
-                                modifier = Modifier.padding(top = 4.dp).size(220.dp).clip(RoundedCornerShape(8.dp)),
-                                contentScale = ContentScale.Fit,
-                            )
-                        }
                         val key = line.file
-                        if (key != null && line.fileReady && !line.mine) {
-                            TextButton(onClick = { onSaveFile(key) }) { Text("Save…", color = Palette.accent) }
+                        val image = line.image
+                        if (image == null) {
+                            Text(line.text, color = Palette.text, fontSize = 14.sp)
+                            if (key != null && line.fileReady && !line.mine) {
+                                TextButton(onClick = { onSaveFile(key) }) { Text("Save…", color = Palette.accent) }
+                            }
+                        } else {
+                            // A picture or video shows by itself; its file name would only repeat it.
+                            MediaBubble(vm, line, image, onSaveFile)
                         }
                     }
                 }
@@ -598,4 +599,52 @@ private fun ChatPanel(vm: RoomViewModel, modifier: Modifier, onAttach: () -> Uni
             ControlButton(Icons.Filled.AttachFile, active = false, onClick = onAttach)
         }
     }
+}
+
+@Composable
+private fun MediaBubble(vm: RoomViewModel, line: ChatLine, image: ImageBitmap, onSaveFile: (String) -> Unit) {
+    val key = line.file ?: return
+    val playing = line.duration != null && vm.playing == key
+    var paused by remember(playing) { mutableStateOf(false) }
+    val aspect = image.width.toFloat() / image.height.coerceAtLeast(1)
+    // At most 240 wide and 300 tall, so phone videos stand upright without filling the chat.
+    val width = minOf(240f, 300f * aspect).dp
+    Box(
+        Modifier.padding(top = 4.dp).size(width, width / aspect).clip(RoundedCornerShape(8.dp))
+            .then(
+                if (line.duration != null) {
+                    Modifier.clickable { if (playing) paused = !paused else vm.toggleVideo(key) }
+                } else {
+                    Modifier
+                },
+            ),
+    ) {
+        val data = if (playing) vm.file(key)?.second else null
+        if (data != null) {
+            InlineVideo(data, paused, onEnd = { vm.toggleVideo(key) }, modifier = Modifier.fillMaxSize())
+        } else {
+            Image(bitmap = image, contentDescription = line.text, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        }
+        if (line.duration != null && (!playing || paused)) {
+            Box(
+                Modifier.align(Alignment.Center).size(44.dp).clip(CircleShape).background(Color(0xB8000000)),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = Color.White) }
+        }
+        line.duration?.let {
+            Pill(it, Modifier.align(Alignment.BottomStart).padding(6.dp))
+        }
+        if (line.fileReady) {
+            Pill("Save", Modifier.align(Alignment.BottomEnd).padding(6.dp).clickable { onSaveFile(key) })
+        }
+    }
+}
+
+@Composable
+private fun Pill(text: String, modifier: Modifier) {
+    Text(
+        text, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+        modifier = modifier.clip(RoundedCornerShape(12.dp)).background(Color(0xB8000000))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
 }

@@ -94,7 +94,7 @@ Every check below needs real hardware. When something is off, send the **Stats**
    - [ ] The call notification's **Mute** and **Leave** buttons work.
    - [ ] The camera flip button switches between front and back.
    - [ ] A short beep when someone joins or leaves (Settings can turn it off).
-   - [ ] The paperclip next to the chat box sends a photo both ways; **Save…** stores it. Long-press a friend's tile: mute them or change their volume, for you only.
+   - [ ] The paperclip next to the chat box sends a photo both ways; the **Save** button on it stores it. A video sent either way shows its first frame with ▶ and plays in the chat on the phone, tap to pause (it uses the phone's own decoders, so HEVC works there too; whether its sound comes out of the speaker or the earpiece mid-call is untested). Long-press a friend's tile: mute them or change their volume, for you only.
    - [ ] Press Home (or Back) mid-call: the call shrinks to a picture-in-picture window showing a friend's screen share or camera.
    - [ ] **Reconnect:** turn the phone's Wi-Fi off mid-call (so it moves to mobile data). Expect "Reconnecting…" for a few seconds, then the call resumes. Needs the relay from section 4.
    - [ ] **Relay restart:** stop `silent-relay.exe` mid-call. The call keeps going; the app says the relay is offline. Start it again: within ~15 s the notice goes away and nobody shows as having left.
