@@ -317,6 +317,8 @@ component Home inherits Rectangle {
     in property <bool> busy;
     callback create-room;
     callback join-room;
+    /// Starts a room with a built-in test friend in it.
+    callback test-call;
     callback show-settings;
 
     background: Palette.bg;
@@ -390,14 +392,27 @@ component Home inherits Rectangle {
                     horizontal-alignment: center;
                 }
 
-                Text {
-                    text: "Settings";
-                    color: Palette.accent;
-                    font-size: 13px;
-                    horizontal-alignment: center;
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.show-settings(); }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 28px;
+                    Text {
+                        text: "Test call";
+                        color: Palette.accent;
+                        font-size: 13px;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            enabled: !root.busy;
+                            clicked => { root.test-call(); }
+                        }
+                    }
+                    Text {
+                        text: "Settings";
+                        color: Palette.accent;
+                        font-size: 13px;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.show-settings(); }
+                        }
                     }
                 }
             }
@@ -805,6 +820,7 @@ export component AppWindow inherits Window {
 
     callback create-room;
     callback join-room;
+    callback test-call;
     callback toggle-mic;
     callback toggle-camera;
     callback toggle-screen;
@@ -836,6 +852,7 @@ export component AppWindow inherits Window {
         busy: root.busy;
         create-room => { root.create-room(); }
         join-room => { root.join-room(); }
+        test-call => { root.test-call(); }
         show-settings => {
             root.settings-open = true;
             root.settings-opened();

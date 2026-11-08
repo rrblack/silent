@@ -12,7 +12,7 @@ use libwebrtc::video_track::RtcVideoTrack;
 use silent_core::proto::IceConfig;
 use silent_engine::{
     AudioInput, CameraProfile, CameraTarget, Engine, PeerId, Room, RoomError, RoomEvent,
-    ScreenProfile, ScreenTarget, Settings, VideoKind,
+    ScreenProfile, ScreenTarget, Settings, TestFriend, VideoKind,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::watch;
@@ -939,4 +939,45 @@ async fn cameras_are_sent_at_the_size_friends_show_them() {
     // Bob makes it big: back to 720p.
     view.report(&frame, (1280, 720));
     until_stats(&alice.room, b, sending(720, 540)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_friend_shows_video_answers_and_sends_files_back() {
+    let _serial = SERIAL.lock().await;
+    let relay = relay().await;
+    let engine = Engine::new();
+
+    let mut me = Member::new(engine.create_room(settings(&relay, "Me")).await.unwrap());
+    let friend = TestFriend::join(&engine, &relay, me.room.code().clone())
+        .await
+        .unwrap();
+    let peer = *me.connected(1).await.keys().next().unwrap();
+    let (_, hello) = me.chat().await;
+    assert!(hello.contains("test friend"), "{hello}");
+    let track = me.video(peer, VideoKind::Camera).await;
+    let mut frames = NativeVideoStream::new(track);
+    tokio::time::timeout(STEP, frames.next())
+        .await
+        .expect("a camera frame")
+        .expect("camera stream");
+
+    me.room.send_chat("ping");
+    assert_eq!(me.chat().await, (peer, "You said: ping".to_string()));
+
+    let picture: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+    me.room.send_file("picture.png", picture.clone()).unwrap();
+    let (name, data) = me
+        .until(|e| match e {
+            RoomEvent::FileReceived { name, data, .. } => Some((name.clone(), data.clone())),
+            RoomEvent::FileFailed { .. } => panic!("transfer failed"),
+            _ => None,
+        })
+        .await;
+    assert_eq!(name, "picture.png");
+    assert_eq!(data, picture);
+
+    drop(friend);
+    me.until(|e| matches!(e, RoomEvent::PeerLeft { .. }).then_some(()))
+        .await;
+    me.room.leave().await;
 }

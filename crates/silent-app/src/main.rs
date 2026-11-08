@@ -20,7 +20,8 @@ use silent_engine::libwebrtc::video_track::RtcVideoTrack;
 use silent_engine::render::{Fit, ViewSize};
 use silent_engine::{
     camera, capture, AudioDevice, AudioInput, CameraProfile, CameraTarget, CameraView, Engine,
-    PeerId, Quality, Room, RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, VideoKind,
+    PeerId, Quality, Room, RoomError, RoomEvent, ScreenProfile, ScreenTarget, Settings, TestFriend,
+    VideoKind,
 };
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 use tokio::task::JoinHandle;
@@ -45,6 +46,8 @@ struct Backend {
     tile_sizes: Mutex<HashMap<String, Arc<ViewSize>>>,
     /// The computer's sound going out with the screen share, if chosen.
     computer_audio: Mutex<Option<computer_audio::ComputerAudio>>,
+    /// The built-in friend of a test call, which leaves with the room.
+    test_friend: Mutex<Option<TestFriend>>,
 }
 
 /// Stops sending computer audio (the screen share ended, or the room).
@@ -1205,13 +1208,44 @@ fn fill_picker(batch: u64, window: &slint::Weak<AppWindow>) {
     }
 }
 
-fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<InviteCode>) {
+/// Brings a [`TestFriend`] into the room of generation `mine`, unless it
+/// was left in the meantime.
+async fn add_test_friend(
+    window: slint::Weak<AppWindow>,
+    relay_url: String,
+    code: InviteCode,
+    mine: u64,
+) {
+    match TestFriend::join(&backend().engine, &relay_url, code).await {
+        Ok(friend) => {
+            if backend().generation.load(Ordering::SeqCst) == mine {
+                *backend().test_friend.lock().unwrap() = Some(friend);
+            }
+        }
+        Err(e) => {
+            let text = format!("The test friend couldn't join: {}", room_error_text(&e));
+            let _ = window.upgrade_in_event_loop(move |w| w.set_notice(text.into()));
+        }
+    }
+}
+
+/// How to get into a room.
+enum Entry {
+    Create,
+    Join(InviteCode),
+    /// A new room with a [`TestFriend`] in it.
+    TestCall,
+}
+
+fn open_room(window: slint::Weak<AppWindow>, settings: Settings, entry: Entry) {
     let my_name = silent_core::proto::clean_name(&settings.name);
     backend().rt.spawn(async move {
-        let created = join.is_none();
-        let result = match join {
-            None => backend().engine.create_room(settings).await,
-            Some(code) => backend().engine.join_room(settings, code).await,
+        let created = !matches!(entry, Entry::Join(_));
+        let test_call = matches!(entry, Entry::TestCall);
+        let relay_url = settings.relay_url.clone();
+        let result = match entry {
+            Entry::Join(code) => backend().engine.join_room(settings, code).await,
+            _ => backend().engine.create_room(settings).await,
         };
         let mut room = match result {
             Ok(room) => room,
@@ -1241,8 +1275,12 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
             room.local_video(VideoKind::Screen),
             None,
         );
+        let invite = room.code().clone();
         *backend().room.lock().unwrap() = Some(room);
         let mine = backend().generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if test_call {
+            tokio::spawn(add_test_friend(window.clone(), relay_url, invite, mine));
+        }
 
         let win = window.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -1331,6 +1369,7 @@ fn open_room(window: slint::Weak<AppWindow>, settings: Settings, join: Option<In
 fn leave_room(error: Option<&str>) {
     backend().generation.fetch_add(1, Ordering::SeqCst);
     stop_computer_audio();
+    backend().test_friend.lock().unwrap().take();
     let room = backend().room.lock().unwrap().take();
     stop_pumps(None);
     if let Some(room) = room {
@@ -1438,6 +1477,7 @@ fn main() -> anyhow::Result<()> {
         pumps: Mutex::new(HashMap::new()),
         tile_sizes: Mutex::new(HashMap::new()),
         computer_audio: Mutex::new(None),
+        test_friend: Mutex::new(None),
     };
     if BACKEND.set(state).is_err() {
         unreachable!("main runs once");
@@ -1461,7 +1501,18 @@ fn main() -> anyhow::Result<()> {
         }
         w.set_busy(true);
         w.set_home_error("".into());
-        open_room(weak.clone(), settings_from(&w), None);
+        open_room(weak.clone(), settings_from(&w), Entry::Create);
+    });
+
+    let weak = window.as_weak();
+    window.on_test_call(move || {
+        let Some(w) = weak.upgrade() else { return };
+        if w.get_busy() || backend().room.lock().unwrap().is_some() {
+            return;
+        }
+        w.set_busy(true);
+        w.set_home_error("".into());
+        open_room(weak.clone(), settings_from(&w), Entry::TestCall);
     });
 
     let weak = window.as_weak();
@@ -1474,7 +1525,7 @@ fn main() -> anyhow::Result<()> {
             Ok(code) => {
                 w.set_busy(true);
                 w.set_home_error("".into());
-                open_room(weak.clone(), settings_from(&w), Some(code));
+                open_room(weak.clone(), settings_from(&w), Entry::Join(code));
             }
             Err(e) => {
                 w.set_home_error(format!("That doesn't look like a Silent code: {e}.").into())

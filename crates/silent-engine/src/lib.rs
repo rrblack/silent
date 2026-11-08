@@ -10,6 +10,7 @@ pub mod render;
 mod room;
 mod signaling;
 pub mod stats;
+mod test_friend;
 
 use libwebrtc::peer_connection_factory::PeerConnectionFactory;
 use silent_core::proto::{Intent, RelayErrorCode};
@@ -25,6 +26,7 @@ pub use signaling::SignalError;
 pub use silent_core::proto::MediaState;
 pub use silent_core::PeerId;
 pub use stats::Quality;
+pub use test_friend::{TestFriend, TEST_FRIEND_NAME};
 
 const NAMEPLATE_ATTEMPTS: usize = 8;
 
