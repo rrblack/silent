@@ -54,6 +54,13 @@ You can skip all of that and just download `silent-android` from CI.
 
 Every check below needs real hardware. When something is off, send the **Stats** sheet text, a screenshot, and for Android the output of `adb logcat -s silent AndroidRuntime`.
 
+### Quick check: one window, **Test call**
+Click **Test call** on the home screen. A built-in test friend joins in a few seconds: a moving test pattern with a green ring (it beeps), and a hello in chat.
+- [ ] You hear its beeps.
+- [ ] Type in chat: it answers "You said: …".
+- [ ] Send it a photo, then a phone video, with **+**: each comes back to you, and the video plays.
+- [ ] **Leave**: you're back on the home screen.
+
 ### A. One PC, two windows
 1. Download `silent-Windows`, unzip it, and open `Silent.exe` twice.
    - Windows SmartScreen will warn about an unknown publisher: click **More info**, then **Run anyway**.
